@@ -97,13 +97,15 @@ def extract_flight_parameters(query):
         Output ONLY a valid JSON object with these fields if mentioned:
         - origin: Airport code or city name
         - destination: Airport code or city name
-        - date: The raw date mention (do not convert to a specific format)
+        - departure_date: The raw departure date mention (do not convert to a specific format)
+        - return_date: The raw return date mention (do not convert to a specific format)
         - adults: Number of adult passengers (default to 1 if not specified)
         - cabin_class: One of "Economy", "Premium Economy", or "Business"
         - children: Number of children aged 2-12 (default to 0 if not specified)
         - infants: Number of infants under 2 (default to 0 if not specified)
         
         If a field is not mentioned in the query, DO NOT include it in the output.
+        For round-trip queries, be sure to identify both departure and return dates.
         """
         
         prompt = f"Extract flight parameters from this query. Today's date is {current_date.strftime('%Y-%m-%d')}.\n\nQuery: {query}"
@@ -116,7 +118,7 @@ def extract_flight_parameters(query):
         if json_match:
             params = json.loads(json_match.group(1))
         else:
-            # Fallback to regex extraction for simple queries
+            # Fallback to regex extraction
             params = {}
             
             # Extract origin and destination
@@ -140,13 +142,37 @@ def extract_flight_parameters(query):
             if adults_match:
                 params['adults'] = int(adults_match.group(1))
             
-            # Check for common date keywords
+            # Check for round-trip indicators
+            is_round_trip = any(phrase in query.lower() for phrase in ["round trip", "round-trip", "return", "coming back"])
+            
+            # Try to extract dates
             date_keywords = ["today", "tomorrow", "next week", "monday", "tuesday", "wednesday", 
                            "thursday", "friday", "saturday", "sunday"]
-            for keyword in date_keywords:
-                if keyword.lower() in query.lower():
-                    params['date'] = keyword
-                    break
+            
+            if is_round_trip:
+                # Look for departure and return dates pattern
+                departure_return_match = re.search(r'(?:leaving|departing|going)(?:\s+on)?\s+([^,]+)(?:,|\s+and)(?:\s+returning|\s+coming back)(?:\s+on)?\s+([^,\.]+)', query, re.IGNORECASE)
+                if departure_return_match:
+                    params['departure_date'] = departure_return_match.group(1).strip()
+                    params['return_date'] = departure_return_match.group(2).strip()
+                else:
+                    # Try to find two date mentions
+                    date_mentions = []
+                    for keyword in date_keywords:
+                        if keyword.lower() in query.lower():
+                            date_mentions.append(keyword)
+                    
+                    if len(date_mentions) >= 2:
+                        params['departure_date'] = date_mentions[0]
+                        params['return_date'] = date_mentions[1]
+                    elif len(date_mentions) == 1:
+                        params['departure_date'] = date_mentions[0]
+            else:
+                # For one-way, just look for the first date mention
+                for keyword in date_keywords:
+                    if keyword.lower() in query.lower():
+                        params['departure_date'] = keyword
+                        break
         
         # Clean and validate parameters
         result = {}
@@ -158,11 +184,18 @@ def extract_flight_parameters(query):
             result['destination'] = params['destination'].upper() if len(params['destination']) == 3 else params['destination']
         
         # Parse departure date
-        date_text = params.get('date')
-        if date_text:
-            parsed_date = parse_natural_date(date_text, current_date)
-            if parsed_date:
-                result['date'] = parsed_date
+        departure_date_text = params.get('departure_date')
+        if departure_date_text:
+            parsed_departure_date = parse_natural_date(departure_date_text, current_date)
+            if parsed_departure_date:
+                result['departure_date'] = parsed_departure_date
+        
+        # Parse return date if present
+        return_date_text = params.get('return_date')
+        if return_date_text:
+            parsed_return_date = parse_natural_date(return_date_text, current_date)
+            if parsed_return_date:
+                result['return_date'] = parsed_return_date
         
         # Handle passenger counts
         for field in ['adults', 'children', 'infants']:

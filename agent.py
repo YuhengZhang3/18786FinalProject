@@ -22,7 +22,7 @@ args_desc = json.dumps(args_desc, ensure_ascii=False)
 tool_descs.append(f"{flight_search.name}: {flight_search.description}, args: {args_desc}")
 tool_descs = '\n'.join(tool_descs)
 
-# Updated prompt template for single tool
+# Updated prompt template to support both one-way and round-trip
 prompt_tpl = '''Today is {today}. Please help the user with their flight search request. You have access to the following tool:
 
 {tool_descs}
@@ -38,21 +38,30 @@ Question: the input question you must answer
 Thought: Think step by step to understand what information the user is looking for. For flight searches, carefully identify:
   1. Origin and destination airports/cities 
   2. Travel dates (departure and return if applicable)
-  3. Number of passengers (adults, children, infants)
-  4. Cabin class preferences (Economy, Premium Economy, Business)
-  5. Any other specific requirements (non-stop flights, price range, etc.)
+  3. Trip type (one-way or round-trip)
+  4. Number of passengers (adults, children, infants)
+  5. Cabin class preferences (Economy, Premium Economy, Business)
+  6. Any other specific requirements (non-stop flights, price range, etc.)
 Action: flight_search
-Action Input: the input to the action - use valid JSON format with quotes around string values, e.g., {{"key": "value", "number": 42}}. Do NOT use markdown code blocks.
+Action Input: the input to the action - use valid JSON format with quotes around string values, e.g., {{"key": "value", "number": 42}}. For round-trip flights, include both departure_date and return_date. Do NOT use markdown code blocks.
 Observation: the result of the action
 ... (this Thought/Action/Action Input/Observation can be repeated if needed)
 Thought: I now know the final answer
-Final Answer: Present the flight information in a clear, organized manner. For each flight option, include:
+Final Answer: Present the flight information in a clear, organized manner. For each flight option:
+
+For one-way flights:
 - Airline and flight number
 - Departure and arrival times
 - Duration
 - Cabin class
 - Price
 - Number of stops
+
+For round-trip flights:
+- Outbound: Airline, flight number, departure/arrival times, duration, stops
+- Return: Airline, flight number, departure/arrival times, duration, stops
+- Total price
+- Cabin class
 
 For the user, explain if any information was missing from their query and what assumptions you made.
 

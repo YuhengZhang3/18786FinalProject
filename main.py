@@ -23,3 +23,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
+# one-way
+# I need to find a business class flight from SFO to ORD next Friday for 2 adults
+# round-trip
+# 

@@ -52,31 +52,45 @@ class SkyscannerAPIClient:
         results = data.get("inputSuggest", [])
         if not results:
             return None
+        
+        # 首先查找城市级别实体（更广泛的搜索）
+        for result in results:
+            flight_params = result.get("navigation", {}).get("relevantFlightParams", {})
+            entity_type = result.get("navigation", {}).get("entityType", "")
             
-        # Look for exact matches first (exact city/airport code)
+            if entity_type == "CITY":
+                return {
+                    "entityId": flight_params.get("entityId", ""),
+                    "skyId": flight_params.get("skyId", ""),
+                    "name": flight_params.get("localizedName", ""),
+                    "type": flight_params.get("flightPlaceType", "")
+                }
+        
+        # 然后查找精确的机场代码匹配
         for result in results:
             flight_params = result.get("navigation", {}).get("relevantFlightParams", {})
             sky_id = flight_params.get("skyId", "")
+            
             if sky_id and sky_id.upper() == query.upper():
                 return {
-                    "entityId": flight_params.get("entityId"),
+                    "entityId": flight_params.get("entityId", ""),
                     "skyId": sky_id,
-                    "name": flight_params.get("localizedName"),
-                    "type": flight_params.get("flightPlaceType")
+                    "name": flight_params.get("localizedName", ""),
+                    "type": flight_params.get("flightPlaceType", "")
                 }
         
-        # If no exact match, take the first result
+        # 如果没有匹配，使用第一个结果
         if results:
             flight_params = results[0].get("navigation", {}).get("relevantFlightParams", {})
             return {
-                "entityId": flight_params.get("entityId"),
-                "skyId": flight_params.get("skyId"),
-                "name": flight_params.get("localizedName"),
-                "type": flight_params.get("flightPlaceType")
+                "entityId": flight_params.get("entityId", ""),
+                "skyId": flight_params.get("skyId", ""),
+                "name": flight_params.get("localizedName", ""),
+                "type": flight_params.get("flightPlaceType", "")
             }
-            
+        
         return None
-    
+        
     def search_one_way_flights(self, date, origin, origin_id, destination, destination_id, 
                             cabin_class="economy", adults=1, children=0, infants=0):
         """Search for one-way flights"""
@@ -96,6 +110,47 @@ class SkyscannerAPIClient:
             "destinationId": destination_id,
             "cabinClass": cabin_class.lower(),
             "adults": str(adults),
+        }
+        
+        # Add optional parameters if provided
+        if children > 0:
+            querystring["children"] = str(children)
+        if infants > 0:
+            querystring["infants"] = str(infants)
+            
+        try:
+            response = requests.get(url, headers=self.headers, params=querystring)
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                return {"status": "error", "message": f"API error: {response.status_code}", "details": response.text}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+        
+    def search_round_trip_flights(self, departure_date, return_date, origin, origin_id, destination, destination_id, 
+                            cabin_class="economy", adults=1, children=0, infants=0):
+        """Search for round-trip flights"""
+        url = "https://skyscanner89.p.rapidapi.com/flights/roundtrip/list"
+        
+        # Validate cabin class
+        valid_classes = ["economy", "premium_economy", "business"]
+        if cabin_class.lower() not in valid_classes:
+            cabin_class = "economy"
+        
+        # Prepare query parameters
+        querystring = {
+            "inDate": departure_date,
+            "outDate": return_date,
+            "origin": origin,
+            "originId": origin_id,
+            "destination": destination,
+            "destinationId": destination_id,
+            "cabinClass": cabin_class.lower(),
+            "adults": str(adults),
+            "locale": "en-US",
+            "market": "US",
+            "currency": "USD"
         }
         
         # Add optional parameters if provided
