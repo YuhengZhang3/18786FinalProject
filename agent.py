@@ -56,12 +56,14 @@ For one-way flights:
 - Cabin class
 - Price
 - Number of stops
+- Booking link (click to book this flight directly)
 
 For round-trip flights:
 - Outbound: Airline, flight number, departure/arrival times, duration, stops
 - Return: Airline, flight number, departure/arrival times, duration, stops
 - Total price
 - Cabin class
+- Booking link (click to book this itinerary directly)
 
 For the user, explain if any information was missing from their query and what assumptions you made.
 

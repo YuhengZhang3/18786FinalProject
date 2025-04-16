@@ -219,6 +219,9 @@ class SkyscannerFlightSearchTool:
                 if not item.get("legs"):
                     continue
                 
+                # Store the flight ID for booking link
+                flight_id = item.get("id", "")
+                
                 # For round-trip, we have two legs
                 if return_date and len(item["legs"]) >= 2:
                     outbound_leg = item["legs"][0]
@@ -247,6 +250,7 @@ class SkyscannerFlightSearchTool:
                     # Format the round-trip flight
                     flight = {
                         "type": "round-trip",
+                        "leg_id": flight_id,  # Store ID for booking link
                         "outbound": {
                             "airline": outbound_carrier_info.get("name", "Unknown Airline") if outbound_carrier_info else "Unknown Airline",
                             "flight_number": outbound_segments[0].get("flightNumber", "") if outbound_segments else "",
@@ -288,6 +292,7 @@ class SkyscannerFlightSearchTool:
                     # Format the flight
                     flight = {
                         "type": "one-way",
+                        "leg_id": flight_id,  # Store ID for booking link
                         "airline": carrier_info.get("name", "Unknown Airline") if carrier_info else "Unknown Airline",
                         "flight_number": segments[0].get("flightNumber", "") if segments else "",
                         "origin": leg.get("origin", {}).get("displayCode", origin),
@@ -302,6 +307,20 @@ class SkyscannerFlightSearchTool:
                         "stops": leg.get("stopCount", 0)
                     }
                 
+                # Generate booking link
+                search_params = {
+                    "origin": origin,
+                    "destination": destination,
+                    "departure_date": departure_date,
+                    "adults": adults,
+                    "cabin_class": cabin_class,
+                    "return_date": return_date,
+                    "trip_type": "round-trip" if return_date else "one-way",
+                    "children": 0,
+                    "infants": 0
+                }
+                
+                flight["booking_link"] = self._generate_booking_link(flight, search_params)
                 flights.append(flight)
             
             # Sort by price
@@ -330,3 +349,49 @@ class SkyscannerFlightSearchTool:
             
         except Exception as e:
             return f"Error formatting flight results: {str(e)}"
+        
+    def _generate_booking_link(self, flight, search_params):
+        """Generate a Skyscanner booking link for a flight"""
+        try:
+            # Get origin and destination codes
+            if flight.get("type") == "round-trip":
+                origin = flight.get("outbound", {}).get("origin", "").lower()
+                destination = flight.get("outbound", {}).get("destination", "").lower()
+            else:
+                origin = flight.get("origin", "").lower()
+                destination = flight.get("destination", "").lower()
+            
+            # Format date YYYY-MM-DD to DDMMYY
+            dep_date_str = search_params.get("departure_date", "")
+            date_formatted = ""
+            if dep_date_str:
+                date_parts = dep_date_str.split("-")
+                if len(date_parts) == 3:
+                    date_formatted = f"{date_parts[2]}{date_parts[1]}{date_parts[0][2:]}"
+            
+            # Get the flight config for URL
+            leg_id = flight.get("leg_id", "")
+            config_part = f"/config/{leg_id}" if leg_id else ""
+            
+            # Build base URL
+            base_url = f"https://www.skyscanner.com/transport/flights/{origin}/{destination}/{date_formatted}{config_part}"
+            
+            # Add query parameters
+            params = {
+                "adults": search_params.get("adults", 1),
+                "children": search_params.get("children", 0),
+                "infants": search_params.get("infants", 0),
+                "cabinclass": search_params.get("cabin_class", "economy").lower(),
+                "rtn": "1" if search_params.get("trip_type") == "round-trip" else "0",
+                "currency": "USD",
+                "locale": "en-US",
+                "market": "US"
+            }
+            
+            # Build query string
+            query_string = "&".join([f"{k}={v}" for k, v in params.items()])
+            
+            return f"{base_url}?{query_string}"
+        except Exception as e:
+            # Fallback to a basic search URL if there's an error
+            return f"https://www.skyscanner.com/transport/flights/{origin}/{destination}/{date_formatted}"
