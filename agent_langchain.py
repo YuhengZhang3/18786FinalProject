@@ -73,7 +73,7 @@ flight_tool = StructuredTool.from_function(
 # 4.  Create the LLM (ChatOpenAI uses the same openai‑python backend you already call)
 # ----------------------------------------------------------------------
 llm = ChatOpenAI(
-    model_name="gpt-3.5-turbo",
+    model_name="gpt-4o",
     temperature=0.7,
     openai_api_key=OPENAI_API_KEY
 )
@@ -83,39 +83,49 @@ llm = ChatOpenAI(
 #     system_message sets the “persona” you passed into your old llm() wrapper
 # ----------------------------------------------------------------------
 today = datetime.datetime.now().strftime("%Y-%m-%d")
-system_prompt = (
-    "You are a helpful assistant specialized in flight booking. "
-    f"Today is {today}. You are a helpful flight‑booking assistant. "
-    "When the user gives relative dates such as 'tomorrow', 'next Friday', "
-    "or 'in two weeks', interpret them relative to today. When interpreting relative dates, always convert them to an ISO date string (YYYY-MM-DD) before inserting them into function arguments. "
-    
-    "When the user asks for flights, collect the required details and call the "
-    "`flight_search` function. If any required detail is missing, ask ONLY for "
-    "those fields. Present final results clearly in English."
-)
+system_prompt = f"""
+Today is {today}. You are a flight‑booking assistant.
+
+RULES:
+1. Use **exactly** the origin and destination strings the user provides.
+   - If the user writes "Pittsburgh", set origin="Pittsburgh" (or the PIT IATA code) – never replace it with another city.
+2. If a city is ambiguous or unrecognized, ASK the user for clarification instead of guessing.
+3. Convert relative dates like "tomorrow" to YYYY‑MM‑DD.
+4. After you have all REQUIRED fields (origin, destination, departure_date), call the flight_search function.
+5. Tell the user your Flight Search Input and ask them to recheck it when you are unsure about it.
+Memory rules:
+• Conversation history is reliable. If the user has already given a value for
+  origin or destination, you may reuse it without asking again—unless the user
+  explicitly changes it.
+• Only ask follow‑up questions for the fields that are still UNKNOWN after
+  checking the history.
+"""
 
 
 
+
+# 1‑次性初始化
 agent = initialize_agent(
     tools=[flight_tool],
     llm=llm,
     agent=AgentType.OPENAI_FUNCTIONS,
-    memory=ConversationBufferMemory(memory_key="chat_history", return_messages=True),
-    verbose=True,  # prints each step for debugging; set False in prod
+    memory=ConversationBufferMemory(
+        memory_key="chat_history",
+        return_messages=True
+    ),
+    verbose=False,
     agent_kwargs={"system_message": system_prompt},
 )
 
-# ----------------------------------------------------------------------
-# 6.  Example use
-# ----------------------------------------------------------------------
 def chat_loop():
-    print(f"🛫 Flight Search AI Agent 🛬 | Type 'exit' to quit.")
+    print("🛫 Flight Search AI Agent 🛬 | Type 'exit' to quit.")
     while True:
         user_msg = input("You: ").strip()
         if user_msg.lower() in {"exit", "quit"}:
             break
-        bot_reply = agent.invoke(user_msg)   # <-- 完整上下文由 memory 保存
-        print(f"Bot: {bot_reply}\n")
+        bot_reply = agent.invoke(user_msg)    # ✅ 每次用同一个 agent
+        print("Bot:", bot_reply, "\n")
+
 
 if __name__ == "__main__":
     chat_loop()
