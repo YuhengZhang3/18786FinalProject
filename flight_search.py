@@ -361,20 +361,38 @@ class SkyscannerFlightSearchTool:
                 origin = flight.get("origin", "").lower()
                 destination = flight.get("destination", "").lower()
             
-            # Format date YYYY-MM-DD to DDMMYY
+            # Format departure date YYYY-MM-DD to YYMMDD
             dep_date_str = search_params.get("departure_date", "")
-            date_formatted = ""
+            dep_date_formatted = ""
             if dep_date_str:
                 date_parts = dep_date_str.split("-")
                 if len(date_parts) == 3:
-                    date_formatted = f"{date_parts[2]}{date_parts[1]}{date_parts[0][2:]}"
+                    dep_date_formatted = f"{date_parts[0][2:]}{date_parts[1]}{date_parts[2]}"
             
             # Get the flight config for URL
             leg_id = flight.get("leg_id", "")
+            # URL encode the pipe character in the leg_id if present
+            if "|" in leg_id:
+                leg_id = leg_id.replace("|", "%7C")
             config_part = f"/config/{leg_id}" if leg_id else ""
             
-            # Build base URL
-            base_url = f"https://www.skyscanner.com/transport/flights/{origin}/{destination}/{date_formatted}{config_part}"
+            # Different URL structure for round-trip vs one-way
+            is_round_trip = search_params.get("trip_type") == "round-trip" or search_params.get("return_date")
+            
+            if is_round_trip:
+                # Format return date for round-trip
+                ret_date_str = search_params.get("return_date", "")
+                ret_date_formatted = ""
+                if ret_date_str:
+                    date_parts = ret_date_str.split("-")
+                    if len(date_parts) == 3:
+                        ret_date_formatted = f"{date_parts[0][2:]}{date_parts[1]}{date_parts[2]}"
+                
+                # Include both dates in the path for round-trip
+                base_url = f"https://www.skyscanner.com/transport/flights/{origin}/{destination}/{dep_date_formatted}/{ret_date_formatted}{config_part}"
+            else:
+                # One-way format
+                base_url = f"https://www.skyscanner.com/transport/flights/{origin}/{destination}/{dep_date_formatted}{config_part}"
             
             # Add query parameters
             params = {
@@ -382,7 +400,7 @@ class SkyscannerFlightSearchTool:
                 "children": search_params.get("children", 0),
                 "infants": search_params.get("infants", 0),
                 "cabinclass": search_params.get("cabin_class", "economy").lower(),
-                "rtn": "1" if search_params.get("trip_type") == "round-trip" else "0",
+                "rtn": "1" if is_round_trip else "0",
                 "currency": "USD",
                 "locale": "en-US",
                 "market": "US"
@@ -393,5 +411,8 @@ class SkyscannerFlightSearchTool:
             
             return f"{base_url}?{query_string}"
         except Exception as e:
-            # Fallback to a basic search URL if there's an error
-            return f"https://www.skyscanner.com/transport/flights/{origin}/{destination}/{date_formatted}"
+            # Fallback with basic search URL
+            if is_round_trip and ret_date_formatted:
+                return f"https://www.skyscanner.com/transport/flights/{origin}/{destination}/{dep_date_formatted}/{ret_date_formatted}"
+            else:
+                return f"https://www.skyscanner.com/transport/flights/{origin}/{destination}/{dep_date_formatted}"
