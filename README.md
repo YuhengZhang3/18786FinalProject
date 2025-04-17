@@ -180,15 +180,6 @@ Based on available data, the following fields beyond standard flight info can en
 "timeDeltaInDays": 1
 ```
 
-- **Airport City/Region Groupings**: Parent-city relationships (e.g., NYC → JFK/LGA) can help disambiguate vague user input
-```json
-"origin": {
-    "city": "New York",
-    "displayCode": "JFK",
-    "parent": {"displayCode": "NYC", "name": "New York", "type": "City"}
-}
-```
-
 - **Scoring Metrics**: Score fields can aid in LLM-driven ranking or selection logic
 ```json
 "score": 0.999
