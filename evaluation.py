@@ -1,7 +1,9 @@
 import json
 import time
 import signal
+import argparse
 import numpy as np
+import os
 from tqdm import tqdm
 from agent import agent_execute_with_retry
 from nlp import extract_flight_parameters
@@ -14,13 +16,103 @@ def timeout_handler(signum, frame):
     """Handle timeout signal"""
     raise TimeoutException("Evaluation timed out")
 
+# Define NLM caching classes to avoid repeated LLM calls
+class NLMCache:
+    """Cache for NLM function calls to avoid repeated API calls"""
+    
+    def __init__(self, cache_file):
+        self.cache_file = cache_file
+        self.cache = self._load_cache()
+    
+    def _load_cache(self):
+        """Load cache from file if it exists"""
+        try:
+            with open(self.cache_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+    
+    def _save_cache(self):
+        """Save cache to file"""
+        with open(self.cache_file, 'w', encoding='utf-8') as f:
+            json.dump(self.cache, f, ensure_ascii=False, indent=2)
+    
+    def get(self, key):
+        """Get cached result for key if it exists"""
+        return self.cache.get(key)
+    
+    def set(self, key, value):
+        """Set cache entry and save to file"""
+        self.cache[key] = value
+        self._save_cache()
+
+class CachedNLMFunction:
+    """Wrapper for NLM functions to cache results"""
+    
+    def __init__(self, function, cache_file):
+        self.function = function
+        self.cache = NLMCache(cache_file)
+    
+    def __call__(self, *args, **kwargs):
+        """Call function with caching"""
+        # Create cache key - simple serialization of args and kwargs
+        args_str = json.dumps(args) if args else ""
+        kwargs_str = json.dumps(kwargs, sort_keys=True) if kwargs else ""
+        cache_key = f"{args_str}|{kwargs_str}"
+        
+        # Check cache first
+        cached_result = self.cache.get(cache_key)
+        if cached_result is not None:
+            return cached_result
+        
+        # Call original function
+        result = self.function(*args, **kwargs)
+        
+        # Cache result
+        self.cache.set(cache_key, result)
+        
+        return result
+
 class FlightSearchEvaluator:
     """Evaluator for flight search agent"""
     
-    def __init__(self, benchmark_file="benchmark_dataset.json"):
-        """Initialize with benchmark dataset"""
+    def __init__(self, benchmark_file="benchmark_dataset.json", max_entries=None, 
+                predictions_file="predictions.json", results_file="evaluation_results.json", 
+                cache_dir="eval_cache"):
+        """Initialize with benchmark dataset
+        
+        Args:
+            benchmark_file: Path to benchmark dataset JSON file
+            max_entries: Maximum number of entries to evaluate (None for all)
+            predictions_file: File to save individual predictions
+            results_file: File to save summary results
+            cache_dir: Directory for cache files
+        """
+        # Save file paths
+        self.benchmark_file = benchmark_file
+        self.predictions_file = predictions_file
+        self.results_file = results_file
+        self.cache_dir = cache_dir
+        
         # Load benchmark dataset
         self.benchmark_data = self._load_benchmark_data(benchmark_file)
+        
+        # Apply max_entries filter if specified
+        if max_entries and max_entries < len(self.benchmark_data):
+            self.benchmark_data = self.benchmark_data[:max_entries]
+            print(f"Limited to first {max_entries} entries for evaluation")
+        
+        # Set timeout
+        self.timeout = 45  # seconds
+        
+        # Create cache directory if it doesn't exist
+        os.makedirs(cache_dir, exist_ok=True)
+        
+        # Initialize cached extract_params function
+        self.cached_extract_params = CachedNLMFunction(
+            extract_flight_parameters,
+            f"{cache_dir}/params_cache.json"
+        )
         
         # Initialize metrics
         self.metrics = {
@@ -39,8 +131,13 @@ class FlightSearchEvaluator:
             "cabin_class": 0.1
         }
         
-        # Initialize detailed results
-        self.detailed_results = []
+        # Initialize predictions and results
+        self.predictions = []
+        self.results = {}
+        
+        # Hidden checkpoint file for resuming interrupted evaluations
+        self.checkpoint_file = f"{cache_dir}/.evaluation_checkpoint.json"
+        self._load_checkpoint()
     
     def _load_benchmark_data(self, file_path):
         """Load benchmark dataset from file"""
@@ -52,6 +149,50 @@ class FlightSearchEvaluator:
         except Exception as e:
             print(f"Error loading benchmark data: {e}")
             return []
+    
+    def _save_checkpoint(self):
+        """Save current evaluation state to hidden checkpoint file"""
+        checkpoint = {
+            "predictions": self.predictions,
+            "metrics": self.metrics,
+            "benchmark_file": self.benchmark_file,
+            "predictions_file": self.predictions_file,
+            "results_file": self.results_file,
+            "timestamp": time.time()
+        }
+        
+        with open(self.checkpoint_file, 'w', encoding='utf-8') as f:
+            json.dump(checkpoint, f, ensure_ascii=False, indent=2)
+    
+    def _load_checkpoint(self):
+        """Load evaluation state from checkpoint if available"""
+        if not os.path.exists(self.checkpoint_file):
+            return False
+        
+        try:
+            with open(self.checkpoint_file, 'r', encoding='utf-8') as f:
+                checkpoint = json.load(f)
+            
+            # Only load checkpoint if it's for the same benchmark file
+            if checkpoint.get("benchmark_file") != self.benchmark_file:
+                print("Checkpoint is for a different benchmark file. Starting fresh.")
+                return False
+                
+            self.predictions = checkpoint.get("predictions", [])
+            self.metrics = checkpoint.get("metrics", {"tcr": [], "sfa": [], "ftsr": []})
+            
+            # Update output files from checkpoint if not specified
+            if checkpoint.get("predictions_file") and self.predictions_file == "predictions.json":
+                self.predictions_file = checkpoint.get("predictions_file")
+            
+            if checkpoint.get("results_file") and self.results_file == "evaluation_results.json":
+                self.results_file = checkpoint.get("results_file")
+            
+            print(f"Loaded checkpoint with {len(self.predictions)} previously evaluated entries")
+            return True
+        except Exception as e:
+            print(f"Error loading checkpoint: {e}")
+            return False
     
     def _normalize_city_code(self, value):
         """Normalize city/airport code for comparison"""
@@ -171,7 +312,7 @@ class FlightSearchEvaluator:
         # Check if result contains flight information
         try:
             if isinstance(result, str):
-                # Success indicators
+                # Success indicators - removed "booking" as requested
                 success_phrases = [
                     "flight", "airline", "departure", "arrival", "ticket", 
                     "price", "duration", "found", "available"
@@ -197,24 +338,33 @@ class FlightSearchEvaluator:
         except:
             return False
     
-    def evaluate_entry(self, entry, timeout=60):
+    def _is_already_evaluated(self, entry_id):
+        """Check if an entry has already been evaluated"""
+        return any(pred.get("id") == entry_id for pred in self.predictions)
+    
+    def evaluate_entry(self, entry):
         """Evaluate a single benchmark entry"""
+        # Skip if already evaluated
+        if self._is_already_evaluated(entry.get("id", 0)):
+            print(f"Entry {entry.get('id', 0)} already evaluated, skipping")
+            return None
+        
         try:
             query = entry["query"]
             ground_truth = entry["ground_truth"]
             
-            # Extract parameters
-            extracted_params = extract_flight_parameters(query)
+            # Extract parameters using cached function
+            extracted_params = self.cached_extract_params(query)
             
             # Calculate slot filling accuracy
             sfa_score, slot_details = self._calculate_slot_accuracy(extracted_params, ground_truth)
             
             # Set up timeout handler
             signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(timeout)
+            signal.alarm(self.timeout)
             
             try:
-                # Execute agent with the query - limit to just 1 retry
+                # Execute agent with the query - limit retries
                 start_time = time.time()
                 success, result, history = agent_execute_with_retry(query, retry_times=1)
                 processing_time = time.time() - start_time
@@ -222,11 +372,11 @@ class FlightSearchEvaluator:
                 # Cancel timeout
                 signal.alarm(0)
             except TimeoutException:
-                print(f"Warning: Evaluation for entry {entry.get('id', 0)} timed out after {timeout} seconds")
+                print(f"Warning: Evaluation for entry {entry.get('id', 0)} timed out after {self.timeout} seconds")
                 success = False
                 result = "TIMEOUT: Evaluation took too long"
                 history = [(query, result)]
-                processing_time = timeout
+                processing_time = self.timeout
             except Exception as e:
                 print(f"Error executing agent for entry {entry.get('id', 0)}: {e}")
                 success = False
@@ -245,24 +395,32 @@ class FlightSearchEvaluator:
             self.metrics["tcr"].append(tcr_score)
             self.metrics["ftsr"].append(ftsr_score)
             
-            # Store detailed results
-            detail = {
+            # Store prediction (includes both input and response)
+            prediction = {
                 "id": entry.get("id", 0),
                 "query": query,
                 "ground_truth": ground_truth,
                 "extracted_params": extracted_params,
-                "slot_scores": slot_details,
-                "sfa_score": sfa_score,
-                "tcr_score": tcr_score,
-                "ftsr_score": ftsr_score,
-                "processing_time": processing_time,
+                "metrics": {
+                    "sfa_score": sfa_score,
+                    "tcr_score": tcr_score,
+                    "ftsr_score": ftsr_score,
+                    "processing_time": processing_time
+                },
                 "response": result,
                 "success": success,
                 "timed_out": isinstance(result, str) and result.startswith("TIMEOUT"),
                 "error": isinstance(result, str) and result.startswith("ERROR")
             }
             
-            self.detailed_results.append(detail)
+            self.predictions.append(prediction)
+            
+            # Save checkpoint after each evaluation
+            self._save_checkpoint()
+            
+            # Update and save predictions file after each evaluation
+            with open(self.predictions_file, 'w', encoding='utf-8') as f:
+                json.dump(self.predictions, f, ensure_ascii=False, indent=2)
             
             return {
                 "sfa": sfa_score,
@@ -281,58 +439,39 @@ class FlightSearchEvaluator:
             # Ensure timeout is cancelled
             signal.alarm(0)
     
-    def evaluate_in_batches(self, batch_size=10, max_entries=None, save_interim=True):
-        """Evaluate the dataset in batches"""
-        if max_entries and max_entries < len(self.benchmark_data):
-            data_to_evaluate = self.benchmark_data[:max_entries]
-        else:
-            data_to_evaluate = self.benchmark_data
+    def evaluate_dataset(self):
+        """Evaluate the dataset"""
+        # Filter out already evaluated entries
+        entries_to_evaluate = []
+        for entry in self.benchmark_data:
+            if not self._is_already_evaluated(entry.get("id", 0)):
+                entries_to_evaluate.append(entry)
         
-        total_entries = len(data_to_evaluate)
-        num_batches = (total_entries + batch_size - 1) // batch_size
+        remaining = len(entries_to_evaluate)
+        print(f"Found {len(self.benchmark_data) - remaining} already evaluated entries")
+        print(f"Evaluating {remaining} remaining entries...")
         
-        print(f"Evaluating {total_entries} entries in {num_batches} batches of size {batch_size}...")
-        
-        for batch_idx in range(num_batches):
-            start_idx = batch_idx * batch_size
-            end_idx = min(start_idx + batch_size, total_entries)
+        if remaining == 0:
+            print("All entries already evaluated!")
+            return self.get_results()
             
-            print(f"Processing batch {batch_idx+1}/{num_batches} (entries {start_idx+1}-{end_idx})...")
-            
-            batch_data = data_to_evaluate[start_idx:end_idx]
-            for entry in tqdm(batch_data):
+        try:
+            for entry in tqdm(entries_to_evaluate):
                 self.evaluate_entry(entry)
-            
-            # Save interim results after each batch
-            if save_interim:
-                interim_file = f"evaluation_interim_batch_{batch_idx+1}.json"
-                with open(interim_file, 'w', encoding='utf-8') as f:
-                    json.dump({
-                        "summary": self.get_results(),
-                        "detailed_results": self.detailed_results,
-                        "progress": f"{end_idx}/{total_entries} entries processed"
-                    }, f, ensure_ascii=False, indent=2)
-                
-                print(f"Interim results saved to {interim_file}")
+        except KeyboardInterrupt:
+            print("\nEvaluation interrupted by user. Progress has been saved.")
         
         # Calculate overall metrics
-        results = self.get_results()
+        self.results = self.get_results()
         
         # Save final results
-        final_file = "evaluation_results_final.json"
-        with open(final_file, 'w', encoding='utf-8') as f:
-            json.dump({
-                "summary": results,
-                "detailed_results": self.detailed_results
-            }, f, ensure_ascii=False, indent=2)
+        with open(self.results_file, 'w', encoding='utf-8') as f:
+            json.dump(self.results, f, ensure_ascii=False, indent=2)
         
-        print(f"Final evaluation results saved to {final_file}")
+        print(f"Final evaluation results saved to {self.results_file}")
+        print(f"Predictions saved to {self.predictions_file}")
         
-        return results
-    
-    def evaluate_dataset(self, max_entries=None):
-        """Legacy method for evaluating the entire dataset at once"""
-        return self.evaluate_in_batches(batch_size=10, max_entries=max_entries)
+        return self.results
     
     def get_results(self):
         """Get overall evaluation results"""
@@ -360,11 +499,11 @@ class FlightSearchEvaluator:
                 }
         
         # Add overall success rate
-        timed_out_count = sum(1 for r in self.detailed_results if r.get("timed_out", False))
-        error_count = sum(1 for r in self.detailed_results if r.get("error", False))
-        success_count = sum(1 for r in self.detailed_results if r.get("success", False))
+        timed_out_count = sum(1 for r in self.predictions if r.get("timed_out", False))
+        error_count = sum(1 for r in self.predictions if r.get("error", False))
+        success_count = sum(1 for r in self.predictions if r.get("success", False))
         
-        total = len(self.detailed_results)
+        total = len(self.predictions)
         
         results["overall"] = {
             "total_entries": total,
@@ -377,15 +516,16 @@ class FlightSearchEvaluator:
     
     def print_results(self):
         """Print evaluation results in a formatted way"""
-        results = self.get_results()
+        if not self.results:
+            self.results = self.get_results()
         
         print("\n===== EVALUATION RESULTS =====")
-        print(f"Total Entries Evaluated: {results['overall']['total_entries']}")
-        print(f"Success Rate: {results['overall']['success_rate']:.2%}")
-        print(f"Timeout Rate: {results['overall']['timeout_rate']:.2%}")
-        print(f"Error Rate: {results['overall']['error_rate']:.2%}")
+        print(f"Total Entries Evaluated: {self.results['overall']['total_entries']}")
+        print(f"Success Rate: {self.results['overall']['success_rate']:.2%}")
+        print(f"Timeout Rate: {self.results['overall']['timeout_rate']:.2%}")
+        print(f"Error Rate: {self.results['overall']['error_rate']:.2%}")
         
-        for metric, stats in results.items():
+        for metric, stats in self.results.items():
             if metric == "overall":
                 continue
                 
@@ -406,10 +546,44 @@ class FlightSearchEvaluator:
 
 def main():
     """Main function to run evaluation"""
-    evaluator = FlightSearchEvaluator()
+    parser = argparse.ArgumentParser(description='Evaluate flight search agent performance')
+    parser.add_argument('--input', type=str, default="benchmark_dataset.json",
+                      help='Path to benchmark dataset (default: benchmark_dataset.json)')
+    parser.add_argument('--max-entries', type=int, default=None,
+                      help='Maximum number of entries to evaluate (default: all)')
+    parser.add_argument('--predictions', type=str, default="predictions.json",
+                      help='File to save individual predictions (default: predictions.json)')
+    parser.add_argument('--results', type=str, default="evaluation_results.json",
+                      help='File to save summary results (default: evaluation_results.json)')
+    parser.add_argument('--cache-dir', type=str, default="eval_cache",
+                      help='Directory for cache files (default: eval_cache)')
+    parser.add_argument('--timeout', type=int, default=10,
+                      help='Timeout in seconds for each evaluation (default: 45)')
     
-    # Evaluate with batch processing for better stability
-    evaluator.evaluate_in_batches(batch_size=5, max_entries=50)
+    args = parser.parse_args()
+    
+    print(f"Configuration:")
+    print(f"- Input dataset: {args.input}")
+    print(f"- Max entries: {'all' if args.max_entries is None else args.max_entries}")
+    print(f"- Predictions file: {args.predictions}")
+    print(f"- Results file: {args.results}")
+    print(f"- Cache directory: {args.cache_dir}")
+    print(f"- Timeout: {args.timeout} seconds")
+    
+    # Initialize evaluator
+    evaluator = FlightSearchEvaluator(
+        benchmark_file=args.input,
+        max_entries=args.max_entries,
+        predictions_file=args.predictions,
+        results_file=args.results,
+        cache_dir=args.cache_dir
+    )
+    
+    # Set timeout from args
+    evaluator.timeout = args.timeout
+    
+    # Evaluate dataset
+    evaluator.evaluate_dataset()
     
     # Print results
     evaluator.print_results()
