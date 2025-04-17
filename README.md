@@ -194,7 +194,6 @@ Based on available data, the following fields beyond standard flight info can en
 - **Stopover Airports**: Locations of layovers may be relevant for user preferences
 - **Marketing vs Operating Carrier**: Useful when different airlines operate the same route
 - **Time Delta Across Dates**: Multi-day travel detection can help LLM clarify date accuracy
-- **Airport City/Region Groupings**: Parent-city relationships (e.g., NYC → JFK/LGA) can help disambiguate vague user input
 - **Scoring Metrics**: Score fields can aid in LLM-driven ranking or selection logic
 
 These metadata can be used to improve slot-filling accuracy, resolve ambiguities, and refine multi-turn interactions.
