@@ -4,10 +4,35 @@ from llm import llm
 from flight_search import SkyscannerFlightSearchTool
 from nlp import extract_flight_parameters
 
+from langchain.tools import StructuredTool
+from pydantic import BaseModel, Field
+
+
+
 # Create flight search tool
 flight_search = SkyscannerFlightSearchTool()
 tools = [flight_search]
 tool_names = flight_search.name
+
+# ---- 1.1  定义输入 schema（字段直接映射 invoke 里的参数） ----
+class FlightSearchInput(BaseModel):
+    origin: str         = Field(..., description="IATA code or city name of departure")
+    destination: str    = Field(..., description="IATA code or city name of arrival")
+    departure_date: str = Field(..., description="YYYY-MM-DD")
+    return_date: str | None = Field(None, description="YYYY-MM-DD if round‑trip")
+    adults: int = Field(1, ge=1, description="Number of adult passengers")
+    children: int = 0
+    infants: int = 0
+    cabin_class: str = Field("Economy", description="Economy | Premium Economy | Business | First")
+
+# ---- 1.2  包装现有 invoke ----
+flight_tool = StructuredTool.from_function(
+    name        = "flight_search",
+    description = "Search for flights via Skyscanner and return formatted text.",
+    func        = flight_search.invoke,   # 你的旧函数，保持不变
+    args_schema = FlightSearchInput,
+    return_direct = True                  # 让结果直接写回对话
+)
 
 # Prepare tool descriptions
 tool_descs = []
