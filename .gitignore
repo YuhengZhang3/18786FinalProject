@@ -175,3 +175,4 @@ cython_debug/
 
 .env
 *.json
+.DS_Store
