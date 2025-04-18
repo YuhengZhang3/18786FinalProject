@@ -12,6 +12,10 @@ from config import OPENAI_API_KEY
 class RatingInput(BaseModel):
     flights: list[dict] = Field(..., description="List of flight dicts")
 
+class RatingOutput(BaseModel):
+    """What the tool will *return* to the LangGraph runtime."""
+    recommended: dict               # ← for the agent
+    markdown: str                   # ← for the chat UI
 
 def _rate_with_llm(flights: List[Dict]) -> str:
     """Call GPT‑4o to sort + rate + add a short comment, return JSON string"""
@@ -21,25 +25,31 @@ def _rate_with_llm(flights: List[Dict]) -> str:
         openai_api_key=OPENAI_API_KEY,
     )
 
-    system = textwrap.dedent("""
-        You are an experienced travel agent. 
-        Read the list of flights and:
-        1. Score each flight on price, duration, and stopovers (0–10, higher is better).
-        2. Sort flights from best to worst.
-        3. Output ONLY valid JSON with the following structure:
-        {
-          "recommended": <best flight dict>,
-          "flights": [<sorted flight dicts, each with an added "score">],
-          "commentary": "<one‑sentence summary explaining the recommendation>"
-        }
-        4. Don't modify the flight's information!
-        5.DO NOT duplicate any flight.  Copy each element exactly once, preserve all
-fields, only add "score".  There must be the SAME length before and after.
-    """)
+    system = """
+        You are an experienced travel agent.
+
+        OUTPUT SPEC:
+        -------------
+        1. First line: a single JSON object with ONLY the recommended flight.
+           Example: {"recommended": {...}}   ← must be valid JSON.
+        2. Then, a blank line.
+        3. Then, a nicely formatted Markdown report (table, bullets, whatever).
+        Nothing else.
+
+        Rules:
+        1.Keep the book url as it is and show it in both the markdown and JSON.
+        2.The nicely formatted Markdown report should first contain the Recommended Flight and the recommend reason, and the rest of the flight info with the booking link (just show 5 of them that you think is also competitive)
+    """
 
     user = json.dumps({"flights": flights}, ensure_ascii=False)
     response = llm.invoke([("system", system), ("user", user)])
-    return response.content   # function‑calling 已保证是 JSON
+    raw = response.content.strip()
+
+    # split once – JSON part ↑  , Markdown part ↓
+    json_line, md = raw.split("\n", 1)
+    recommended = json.loads(json_line)["recommended"]
+
+    return RatingOutput(recommended=recommended, markdown=md)
 
 
 def rating_tool_bridge(flights: list[dict]) -> str:       # ← 类型对齐
@@ -48,8 +58,9 @@ def rating_tool_bridge(flights: list[dict]) -> str:       # ← 类型对齐
 
 rate_flights_tool = StructuredTool.from_function(
     name="rate_flights",
-    description="Given a list of flights, evaluate and rank them.",
+    description="Rank flights and present a Markdown report. "
+                "Also returns the best flight in JSON so the agent can use it.",
     func=rating_tool_bridge,
     args_schema=RatingInput,
-    return_direct=True,
+    return_direct=False,          # ★ let the agent keep thinking after this step
 )

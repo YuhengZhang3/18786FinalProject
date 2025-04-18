@@ -83,42 +83,18 @@ comment on those options before replying.
 3. Convert relative dates like “tomorrow” to YYYY‑MM‑DD.
 4. After you have all *required* fields (origin, destination, departure_date),
    call **flight_search**.
-5. When flight_search returns, IMMEDIATELY call **rate_flights** with
+5. When flight_search returns, IMMEDIATELY call **rate_flights_tool** with
    `{{"flights": <flight_search result>}}`.
-6. Your **final reply must be the JSON string returned by rate_flights** —
-   nothing else.  This lets the UI parse it directly.
-=================================================
+6. After rate_flights returns, extract the "recommended" flight and:
+   • Call tavily_search with:
+        "weather <destination> on <arrival_date>"  AND
+        "weather <origin> on <departure_date>" AND any search that you consider necessary
+   • Draft 2‑3 practical tips (transport / clothing) based on the weather you find.
+   • Paste the **rate_flights.markdown** block verbatim.
+    Do NOT omit the table. Do NOT rewrite the flight block.
 
-MEMORY RULES:
-• Conversation history is reliable; reuse previously given values unless the
-  user changes them.
-• Only ask follow‑up questions for fields still UNKNOWN.
 
-==================== EXAMPLE ====================
-User: Show me flights from Paris to Rome on 2025‑05‑10.
 
-Assistant:
-Thought: I have origin, destination, departure_date → call flight_search.
-Action: flight_search
-Action Input: {{"origin":"Paris","destination":"Rome","departure_date":"2025-05-10"}}
-
-# (system executes the tool; returns)
-Observation: {{"flights":[...]}}          # list[dict]
-
-Thought: Need to rank the flights.
-Action: rate_flights
-Action Input: {{"flights": (flight_search result)}}
-
-# (system executes the tool; returns)
-Observation: {{"recommended":{{...}}, "flights":[...], "commentary":"..."}}
-
-Thought: I now know the final answer.
-Final Answer: (rate_flights result)       # ← this exact JSON string
-================ END EXAMPLE ================
-
-Remember: **Never** skip the rate_flights step.  
-If rate_flights validation fails, diagnose the error, fix the input, and try
-again — do *not* exit the conversation until rate_flights succeeds.
 """.format(today=today)
 
 
@@ -161,3 +137,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+# Help me book a flight from Pittsburgh to Boston at May 9th
