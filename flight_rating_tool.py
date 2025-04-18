@@ -38,7 +38,8 @@ def _rate_with_llm(flights: List[Dict]) -> str:
 
         Rules:
         1.Keep the book url as it is and show it in both the markdown and JSON.
-        2.The nicely formatted Markdown report should first contain the Recommended Flight and the recommend reason, and the rest of the flight info with the booking link (just show 5 of them that you think is also competitive)
+        2.The nicely formatted Markdown report should first contain the Recommended Flight and the recommend reason, and the rest of the flight info with the booking link (just show 5 of them that you think is also competitive). Tell us the total amount of flights.
+        3. Don't make up flights, if there isn't enough flights, just show the flights that are available.
     """
 
     user = json.dumps({"flights": flights}, ensure_ascii=False)

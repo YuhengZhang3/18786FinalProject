@@ -91,7 +91,7 @@ comment on those options before replying.
         "weather <origin> on <departure_date>" AND any search that you consider necessary
    • Draft 2‑3 practical tips (transport / clothing) based on the weather you find.
    • Paste the **rate_flights.markdown** block verbatim.
-    Do NOT omit the table. Do NOT rewrite the flight block.
+    Do NOT rewrite the flight block. If no flight can be found, tell the user to try another date.
 
 
 
