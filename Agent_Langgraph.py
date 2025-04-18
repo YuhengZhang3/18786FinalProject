@@ -89,8 +89,11 @@ Memory rules:
 # ----------------------------------------------------------------------
 # 6.  Build graph WITH memory
 # ----------------------------------------------------------------------
-memory_store = MemorySaver()                                  # ### NEW
-TOOLS = [flight_tool]
+memory_store = MemorySaver()  
+os.environ["TAVILY_API_KEY"] = "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"
+from langchain_community.tools.tavily_search import TavilySearchResults
+tavily_tool   = TavilySearchResults(max_results=5)                                # ### NEW
+TOOLS = [flight_tool, tavily_tool]
 
 graph = create_react_agent(
     model=llm,
