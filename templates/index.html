@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Travel Assistant</title>
+    <title>Flight Search AI Assistant</title>
     <style>
         /* Base styles */
         * {
@@ -95,12 +95,27 @@
             margin: 20px 0;
             padding: 30px;
             display: flex;
-            justify-content: center;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
         }
         
         .welcome-image {
-            max-width: 500px;
+            max-width: 350px;
             width: 100%;
+            margin-bottom: 20px;
+        }
+        
+        .welcome-title {
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+        
+        .welcome-text {
+            font-size: 16px;
+            color: #666;
+            max-width: 500px;
         }
         
         .chat-container {
@@ -137,6 +152,50 @@
         .thinking {
             color: #666;
             font-style: italic;
+        }
+        
+        /* Markdown styling */
+        .assistant-message h1, 
+        .assistant-message h2, 
+        .assistant-message h3 {
+            margin-top: 15px;
+            margin-bottom: 10px;
+        }
+        
+        .assistant-message p {
+            margin-bottom: 10px;
+        }
+        
+        .assistant-message ul, 
+        .assistant-message ol {
+            margin-left: 20px;
+            margin-bottom: 10px;
+        }
+        
+        .assistant-message table {
+            border-collapse: collapse;
+            margin: 15px 0;
+            width: 100%;
+        }
+        
+        .assistant-message th, 
+        .assistant-message td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        
+        .assistant-message th {
+            background-color: #f2f2f2;
+        }
+        
+        .assistant-message a {
+            color: #1a73e8;
+            text-decoration: none;
+        }
+        
+        .assistant-message a:hover {
+            text-decoration: underline;
         }
         
         /* Flight details styling */
@@ -236,14 +295,16 @@
     <div class="header">
         <div class="logo-container">
             <img src="/static/ui_image.png" alt="AI Travel Assistant" class="logo-image">
-            <div class="logo-text">AI Travel Assistant</div>
+            <div class="logo-text">Flight Search AI Assistant</div>
         </div>
         <button id="clearChatButton" class="btn btn-light">New Chat</button>
     </div>
     
     <div class="container">
-        <div class="welcome-card">
+        <div class="welcome-card" id="welcomeCard">
             <img src="/static/ui_image.png" alt="Travel Assistant Welcome" class="welcome-image">
+            <div class="welcome-title">Welcome to Flight Search AI Assistant</div>
+            <div class="welcome-text">I can help you search for flights, provide recommendations, and give you travel tips based on weather conditions. Tell me where you'd like to go!</div>
         </div>
         
         <div class="chat-container" id="chatContainer">
@@ -257,6 +318,7 @@
                 <div class="example-chip" onclick="useExample(this)">Round-trip from SFO to Tokyo in June</div>
                 <div class="example-chip" onclick="useExample(this)">Business class flight to Paris next week</div>
                 <div class="example-chip" onclick="useExample(this)">Cheap flights from Chicago to Miami</div>
+                <div class="example-chip" onclick="useExample(this)">Help me book a flight from Pittsburgh to Boston on May 9th</div>
             </div>
         </div>
         
@@ -266,35 +328,59 @@
         </div>
     </div>
     
+    <script src="/static/load_image.js"></script>
     <script>
         // Session management
         let sessionId = 'user-session-' + Date.now();
         
         // DOM elements
         const chatContainer = document.getElementById('chatContainer');
+        const welcomeCard = document.getElementById('welcomeCard');
         const queryInput = document.getElementById('queryInput');
         const sendButton = document.getElementById('sendButton');
         const clearChatButton = document.getElementById('clearChatButton');
         
-        // Format flight responses
-        function formatFlightText(text) {
+        // Handle markdown formatting
+        function formatMarkdown(text) {
+            // Basic Markdown formatting
+            
+            // Handle headings
+            text = text.replace(/^### (.*$)/gm, '<h3>$1</h3>');
+            text = text.replace(/^## (.*$)/gm, '<h2>$1</h2>');
+            text = text.replace(/^# (.*$)/gm, '<h1>$1</h1>');
+            
+            // Handle bold and italic
+            text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+            text = text.replace(/\*(.*?)\*/g, '<em>$1</em>');
+            
+            // Handle links - must be done before bullet points
             text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" class="booking-link">$1</a>');
-            text = text.replace(/(\d+\. .*?)(?=\d+\. |Would|$)/gs, '<div class="flight-option">$1</div>');
-            text = text.replace(/\*\*(.*?)\*\*/g, '<div class="flight-header">$1</div>');
-            text = text.replace(/• (.*?)(?=•|\n\n|\n<|$)/g, '<div class="flight-detail">• $1</div>');
+            
+            // Handle bullet points
+            text = text.replace(/^\s*[-*•]\s+(.*?)$/gm, '<div class="flight-detail">• $1</div>');
+            
+            // Handle numbered lists
+            text = text.replace(/^\s*(\d+)\.\s+(.*?)$/gm, '<div class="flight-option">$1. $2</div>');
+            
+            // Handle line breaks
+            text = text.replace(/\n\n/g, '<br><br>');
             text = text.replace(/\n/g, '<br>');
+            
             return text;
         }
         
         // Add a message to the chat
         function addMessage(text, isUser) {
+            // Hide welcome card once chat starts
+            welcomeCard.style.display = 'none';
+            
             const messageDiv = document.createElement('div');
             messageDiv.className = isUser ? 'message user-message' : 'message assistant-message';
             
             if (isUser) {
                 messageDiv.textContent = text;
             } else {
-                messageDiv.innerHTML = formatFlightText(text);
+                messageDiv.innerHTML = formatMarkdown(text);
             }
             
             chatContainer.appendChild(messageDiv);
@@ -358,6 +444,9 @@
             // Clear the UI
             chatContainer.innerHTML = '';
             
+            // Show welcome card again
+            welcomeCard.style.display = 'flex';
+            
             // Generate a new session ID
             sessionId = 'user-session-' + Date.now();
             
@@ -374,11 +463,6 @@
             .catch(error => {
                 console.error('Error clearing chat history:', error);
             });
-            
-            // Add welcome message
-            setTimeout(() => {
-                addMessage("Hi! I'm your AI Travel Assistant. How can I help you book your next flight?", false);
-            }, 300);
         }
         
         // Event listeners
@@ -397,11 +481,6 @@
             queryInput.style.height = 'auto';
             queryInput.style.height = Math.min(queryInput.scrollHeight, 200) + 'px';
         });
-        
-        // Add initial welcome message
-        setTimeout(() => {
-            addMessage("Hi! I'm your AI Travel Assistant. How can I help you book your next flight?", false);
-        }, 500);
     </script>
 </body>
 </html>

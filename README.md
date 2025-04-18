@@ -41,18 +41,14 @@ Then open your browser and navigate to `http://127.0.0.1:5000/` to access the we
 
 ### Command Line Interface
 
-Run the CLI application:
+Run the CLI application, you can find the chatbot in the terminal:
 ```bash
-python main.py
+python Agent_Langgraph.py
 ```
 
 Example queries:
 - "I need to find a business class flight from SFO to ORD next Friday for 2 adults"
 - "Find me a round-trip flight from New York to Los Angeles, leaving next Friday and returning next Sunday, economy class"
-
-### New Agent Pipeline with Memory and ReAct
-
-Directly run `Agent_Langgraph.py`, you can find the chatbot in the terminal.
 
 ## Evaluation & Benchmarking
 
@@ -201,9 +197,5 @@ Based on available data, the following fields beyond standard flight info can en
 - **Scoring Metrics**: Score fields can aid in LLM-driven ranking or selection logic
 
 These metadata can be used to improve slot-filling accuracy, resolve ambiguities, and refine multi-turn interactions.
-
-### UI Enhancements
-
-Planned improvements include better feedback indicators for user input processing, cleaner presentation of search results, and enhanced error messaging when API responses fail.
 
 
