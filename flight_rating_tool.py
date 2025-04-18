@@ -27,12 +27,14 @@ def _rate_with_llm(flights: List[Dict]) -> str:
         1. Score each flight on price, duration, and stopovers (0–10, higher is better).
         2. Sort flights from best to worst.
         3. Output ONLY valid JSON with the following structure:
-        4. Don't modify the flight information!!!
         {
           "recommended": <best flight dict>,
           "flights": [<sorted flight dicts, each with an added "score">],
           "commentary": "<one‑sentence summary explaining the recommendation>"
         }
+        4. Don't modify the flight's information!
+        5.DO NOT duplicate any flight.  Copy each element exactly once, preserve all
+fields, only add "score".  There must be the SAME length before and after.
     """)
 
     user = json.dumps({"flights": flights}, ensure_ascii=False)
