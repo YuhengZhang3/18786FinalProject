@@ -50,6 +50,10 @@ Example queries:
 - "I need to find a business class flight from SFO to ORD next Friday for 2 adults"
 - "Find me a round-trip flight from New York to Los Angeles, leaving next Friday and returning next Sunday, economy class"
 
+### New Agent Pipeline with Memory and ReAct
+
+Directly run `Agent_Langgraph.py`, you can find the chatbot in the terminal.
+
 ## Evaluation & Benchmarking
 
 This project includes tools for generating benchmark datasets and evaluating the flight search agent's performance.
