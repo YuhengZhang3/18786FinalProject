@@ -10,7 +10,7 @@ from langgraph.checkpoint.memory import MemorySaver          # ### NEW
 from config import OPENAI_API_KEY
 from flight_search import SkyscannerFlightSearchTool
 from flight_rating_tool import rate_flights_tool
-
+from langchain_community.tools.tavily_search import TavilySearchResults
 # ----------------------------------------------------------------------
 # 1.  Keep your original flight‑search tool
 # ----------------------------------------------------------------------
@@ -125,8 +125,12 @@ again — do *not* exit the conversation until rate_flights succeeds.
 # ----------------------------------------------------------------------
 # 6.  Build graph WITH memory
 # ----------------------------------------------------------------------
-memory_store = MemorySaver()                                  # ### NEW
-TOOLS = [flight_tool, rate_flights_tool]    
+
+memory_store = MemorySaver()  
+os.environ["TAVILY_API_KEY"] = "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"
+
+tavily_tool   = TavilySearchResults(max_results=5)                                # ### NEW
+TOOLS = [flight_tool, tavily_tool,rate_flights_tool] # we already imported the rate_flights_tool
 
 graph = create_react_agent(
     model=llm,

@@ -6,7 +6,7 @@ from nlp import extract_flight_parameters
 
 from langchain.tools import StructuredTool
 from pydantic import BaseModel, Field
-
+from typing import Union
 
 
 # Create flight search tool
@@ -19,7 +19,7 @@ class FlightSearchInput(BaseModel):
     origin: str         = Field(..., description="IATA code or city name of departure")
     destination: str    = Field(..., description="IATA code or city name of arrival")
     departure_date: str = Field(..., description="YYYY-MM-DD")
-    return_date: str | None = Field(None, description="YYYY-MM-DD if round‑trip")
+    return_date: Union[str, None] = Field(None, description="YYYY-MM-DD if round‑trip")
     adults: int = Field(1, ge=1, description="Number of adult passengers")
     children: int = 0
     infants: int = 0
