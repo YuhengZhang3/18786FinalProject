@@ -1,592 +1,295 @@
+# evaluation.py
 import json
-import time
-import signal
+import datetime
 import argparse
-import numpy as np
-import os
+import logging
+import re
+import time
 from tqdm import tqdm
-from agent import agent_execute_with_retry
-from nlp import extract_flight_parameters
 
-class TimeoutException(Exception):
-    """Exception raised when evaluation takes too long"""
-    pass
+# Import agent components from Agent_Langgraph.py
+from Agent_Langgraph import graph, memory_store, SYSTEM_PROMPT
 
-def timeout_handler(signum, frame):
-    """Handle timeout signal"""
-    raise TimeoutException("Evaluation timed out")
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-# Define NLM caching classes to avoid repeated LLM calls
-class NLMCache:
-    """Cache for NLM function calls to avoid repeated API calls"""
+class FlightAgentEvaluator:
+    """Evaluates a flight search agent using benchmark datasets"""
     
-    def __init__(self, cache_file):
-        self.cache_file = cache_file
-        self.cache = self._load_cache()
-    
-    def _load_cache(self):
-        """Load cache from file if it exists"""
-        try:
-            with open(self.cache_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return {}
-    
-    def _save_cache(self):
-        """Save cache to file"""
-        with open(self.cache_file, 'w', encoding='utf-8') as f:
-            json.dump(self.cache, f, ensure_ascii=False, indent=2)
-    
-    def get(self, key):
-        """Get cached result for key if it exists"""
-        return self.cache.get(key)
-    
-    def set(self, key, value):
-        """Set cache entry and save to file"""
-        self.cache[key] = value
-        self._save_cache()
-
-class CachedNLMFunction:
-    """Wrapper for NLM functions to cache results"""
-    
-    def __init__(self, function, cache_file):
-        self.function = function
-        self.cache = NLMCache(cache_file)
-    
-    def __call__(self, *args, **kwargs):
-        """Call function with caching"""
-        # Create cache key - simple serialization of args and kwargs
-        args_str = json.dumps(args) if args else ""
-        kwargs_str = json.dumps(kwargs, sort_keys=True) if kwargs else ""
-        cache_key = f"{args_str}|{kwargs_str}"
-        
-        # Check cache first
-        cached_result = self.cache.get(cache_key)
-        if cached_result is not None:
-            return cached_result
-        
-        # Call original function
-        result = self.function(*args, **kwargs)
-        
-        # Cache result
-        self.cache.set(cache_key, result)
-        
-        return result
-
-class FlightSearchEvaluator:
-    """Evaluator for flight search agent"""
-    
-    def __init__(self, benchmark_file="benchmark_dataset.json", max_entries=None, 
-                predictions_file="predictions.json", results_file="evaluation_results.json", 
-                cache_dir="eval_cache"):
-        """Initialize with benchmark dataset
+    def __init__(self, benchmark_file, output_file="evaluation_results.json"):
+        """Initialize the evaluator
         
         Args:
-            benchmark_file: Path to benchmark dataset JSON file
-            max_entries: Maximum number of entries to evaluate (None for all)
-            predictions_file: File to save individual predictions
-            results_file: File to save summary results
-            cache_dir: Directory for cache files
+            benchmark_file (str): Path to benchmark dataset file
+            output_file (str): Path to save evaluation results
         """
-        # Save file paths
         self.benchmark_file = benchmark_file
-        self.predictions_file = predictions_file
-        self.results_file = results_file
-        self.cache_dir = cache_dir
-        
-        # Load benchmark dataset
-        self.benchmark_data = self._load_benchmark_data(benchmark_file)
-        
-        # Apply max_entries filter if specified
-        if max_entries and max_entries < len(self.benchmark_data):
-            self.benchmark_data = self.benchmark_data[:max_entries]
-            print(f"Limited to first {max_entries} entries for evaluation")
-        
-        # Set timeout
-        self.timeout = 45  # seconds
-        
-        # Create cache directory if it doesn't exist
-        os.makedirs(cache_dir, exist_ok=True)
-        
-        # Initialize cached extract_params function
-        self.cached_extract_params = CachedNLMFunction(
-            extract_flight_parameters,
-            f"{cache_dir}/params_cache.json"
-        )
-        
-        # Initialize metrics
-        self.metrics = {
-            "tcr": [],  # Task Completion Rate
-            "sfa": [],  # Slot Filling Accuracy
-            "ftsr": []  # First-Turn Success Rate
+        self.output_file = output_file
+        self.benchmark_data = self._load_benchmark_data()
+        self.evaluation_results = {
+            "metrics": {
+                "sfa": 0,  # Successful Flight Acquisition
+                "tcr": 0,  # Task Completion Rate
+                "ftsr": 0  # Flight-Trip Success Rate
+            },
+            "detailed_results": []
         }
-        
-        # Field weights for SFA calculation
-        self.field_weights = {
-            "origin": 0.25,
-            "destination": 0.25,
-            "departure_date": 0.2,
-            "return_date": 0.1,
-            "adults": 0.1,
-            "cabin_class": 0.1
-        }
-        
-        # Initialize predictions and results
-        self.predictions = []
-        self.results = {}
-        
-        # Hidden checkpoint file for resuming interrupted evaluations
-        self.checkpoint_file = f"{cache_dir}/.evaluation_checkpoint.json"
-        self._load_checkpoint()
     
-    def _load_benchmark_data(self, file_path):
+    def _load_benchmark_data(self):
         """Load benchmark dataset from file"""
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            print(f"Loaded {len(data)} benchmark entries from {file_path}")
-            return data
+            with open(self.benchmark_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
         except Exception as e:
-            print(f"Error loading benchmark data: {e}")
+            logger.error(f"Error loading benchmark file: {e}")
             return []
     
-    def _save_checkpoint(self):
-        """Save current evaluation state to hidden checkpoint file"""
-        checkpoint = {
-            "predictions": self.predictions,
-            "metrics": self.metrics,
-            "benchmark_file": self.benchmark_file,
-            "predictions_file": self.predictions_file,
-            "results_file": self.results_file,
-            "timestamp": time.time()
-        }
+    def evaluate_agent(self, max_samples=None, start_index=0, api_delay=1):
+        """Run evaluation on benchmark dataset
         
-        with open(self.checkpoint_file, 'w', encoding='utf-8') as f:
-            json.dump(checkpoint, f, ensure_ascii=False, indent=2)
-    
-    def _load_checkpoint(self):
-        """Load evaluation state from checkpoint if available"""
-        if not os.path.exists(self.checkpoint_file):
-            return False
+        Args:
+            max_samples (int): Maximum number of samples to evaluate (None for all)
+            start_index (int): Starting index for evaluation
+            api_delay (float): Delay in seconds between API calls to avoid rate limits
+        """
+        if not self.benchmark_data:
+            logger.error("No benchmark data available for evaluation")
+            return
         
-        try:
-            with open(self.checkpoint_file, 'r', encoding='utf-8') as f:
-                checkpoint = json.load(f)
-            
-            # Only load checkpoint if it's for the same benchmark file
-            if checkpoint.get("benchmark_file") != self.benchmark_file:
-                print("Checkpoint is for a different benchmark file. Starting fresh.")
-                return False
-                
-            self.predictions = checkpoint.get("predictions", [])
-            self.metrics = checkpoint.get("metrics", {"tcr": [], "sfa": [], "ftsr": []})
-            
-            # Update output files from checkpoint if not specified
-            if checkpoint.get("predictions_file") and self.predictions_file == "predictions.json":
-                self.predictions_file = checkpoint.get("predictions_file")
-            
-            if checkpoint.get("results_file") and self.results_file == "evaluation_results.json":
-                self.results_file = checkpoint.get("results_file")
-            
-            print(f"Loaded checkpoint with {len(self.predictions)} previously evaluated entries")
-            return True
-        except Exception as e:
-            print(f"Error loading checkpoint: {e}")
-            return False
-    
-    def _normalize_city_code(self, value):
-        """Normalize city/airport code for comparison"""
-        if not value:
-            return ""
+        # Limit samples if specified
+        end_index = min(start_index + max_samples, len(self.benchmark_data)) if max_samples else len(self.benchmark_data)
+        samples = self.benchmark_data[start_index:end_index]
+        logger.info(f"Evaluating agent on {len(samples)} benchmark samples (from index {start_index} to {end_index-1})")
         
-        value = str(value).strip().upper()
-        # Remove non-alphanumeric characters
-        return ''.join(c for c in value if c.isalnum())
-    
-    def _calculate_date_similarity(self, date1, date2):
-        """Calculate similarity between two dates"""
-        if not date1 or not date2:
-            return 0.0
-        
-        try:
-            from datetime import datetime
-            date1_obj = datetime.strptime(date1, "%Y-%m-%d").date()
-            date2_obj = datetime.strptime(date2, "%Y-%m-%d").date()
+        # Run evaluation on each sample
+        for i, sample in enumerate(tqdm(samples, desc="Evaluating samples")):
+            result = self._evaluate_sample(sample, api_delay)
+            self.evaluation_results["detailed_results"].append(result)
             
-            # Calculate days difference
-            days_diff = abs((date1_obj - date2_obj).days)
-            
-            # Convert to similarity (0-1)
-            if days_diff == 0:
-                return 1.0
-            elif days_diff <= 1:
-                return 0.8
-            elif days_diff <= 3:
-                return 0.5
-            elif days_diff <= 7:
-                return 0.2
-            else:
-                return 0.0
-        except:
-            return 0.0
-    
-    def _calculate_slot_accuracy(self, extracted, ground_truth):
-        """Calculate slot filling accuracy"""
-        scores = {}
-        
-        # Origin
-        if "origin" in extracted and "origin" in ground_truth:
-            extracted_origin = self._normalize_city_code(extracted["origin"])
-            ground_truth_origin = self._normalize_city_code(ground_truth["origin"])
-            scores["origin"] = 1.0 if extracted_origin == ground_truth_origin else 0.0
-        else:
-            scores["origin"] = 0.0 if "origin" in ground_truth else 1.0
-        
-        # Destination
-        if "destination" in extracted and "destination" in ground_truth:
-            extracted_dest = self._normalize_city_code(extracted["destination"])
-            ground_truth_dest = self._normalize_city_code(ground_truth["destination"])
-            scores["destination"] = 1.0 if extracted_dest == ground_truth_dest else 0.0
-        else:
-            scores["destination"] = 0.0 if "destination" in ground_truth else 1.0
-        
-        # Departure date
-        if "departure_date" in extracted and "departure_date" in ground_truth:
-            scores["departure_date"] = self._calculate_date_similarity(
-                extracted["departure_date"], ground_truth["departure_date"]
-            )
-        else:
-            scores["departure_date"] = 0.0 if "departure_date" in ground_truth else 1.0
-        
-        # Return date (only if ground truth is round-trip)
-        if ground_truth.get("is_round_trip", False):
-            if "return_date" in extracted and "return_date" in ground_truth:
-                scores["return_date"] = self._calculate_date_similarity(
-                    extracted["return_date"], ground_truth["return_date"]
-                )
-            else:
-                scores["return_date"] = 0.0
-        else:
-            scores["return_date"] = 1.0  # Not applicable for one-way
-        
-        # Adults
-        if "adults" in extracted and "adults" in ground_truth:
-            extracted_adults = int(extracted.get("adults", 1))
-            ground_truth_adults = int(ground_truth.get("adults", 1))
-            scores["adults"] = 1.0 if extracted_adults == ground_truth_adults else 0.0
-        else:
-            # Default to adult=1 if not specified
-            scores["adults"] = 1.0 if ground_truth.get("adults", 1) == 1 else 0.0
-        
-        # Cabin class
-        if "cabin_class" in extracted and "cabin_class" in ground_truth:
-            extracted_cabin = extracted["cabin_class"].lower() if extracted["cabin_class"] else ""
-            ground_truth_cabin = ground_truth["cabin_class"].lower() if ground_truth["cabin_class"] else ""
-            scores["cabin_class"] = 1.0 if extracted_cabin == ground_truth_cabin else 0.0
-        else:
-            # Default to Economy if not specified
-            scores["cabin_class"] = 1.0 if ground_truth.get("cabin_class", "Economy") == "Economy" else 0.0
-        
-        # Calculate weighted average
-        weighted_score = 0.0
-        total_weight = 0.0
-        
-        for field, score in scores.items():
-            weight = self.field_weights.get(field, 0.0)
-            weighted_score += score * weight
-            total_weight += weight
-        
-        final_score = weighted_score / total_weight if total_weight > 0 else 0.0
-        
-        return final_score, scores
-    
-    def _check_first_turn_success(self, result, history):
-        """Check if query was successfully handled in first turn"""
-        # If there's only one interaction, we succeeded in first turn
-        if len(history) == 1:
-            return True
-        return False
-    
-    def _check_task_completion(self, result):
-        """Check if the task was completed successfully"""
-        # Check if result contains flight information
-        try:
-            if isinstance(result, str):
-                # Success indicators - removed "booking" as requested
-                success_phrases = [
-                    "flight", "airline", "departure", "arrival", "ticket", 
-                    "price", "duration", "found", "available"
-                ]
-                
-                # Check if any success phrase is in the result
-                if any(phrase in result.lower() for phrase in success_phrases):
-                    # Check for error indicators even if success phrases exist
-                    error_phrases = [
-                        "couldn't find", "not able to", "try again", "no flights found",
-                        "no results", "unable to find", "couldn't locate", "error performing"
-                    ]
-                    
-                    # If error phrases are found, it's likely a failure
-                    if any(phrase in result.lower() for phrase in error_phrases):
-                        return False
-                    
-                    return True
-                
-                return False
-            
-            return False
-        except:
-            return False
-    
-    def _is_already_evaluated(self, entry_id):
-        """Check if an entry has already been evaluated"""
-        return any(pred.get("id") == entry_id for pred in self.predictions)
-    
-    def evaluate_entry(self, entry):
-        """Evaluate a single benchmark entry"""
-        # Skip if already evaluated
-        if self._is_already_evaluated(entry.get("id", 0)):
-            print(f"Entry {entry.get('id', 0)} already evaluated, skipping")
-            return None
-        
-        try:
-            query = entry["query"]
-            ground_truth = entry["ground_truth"]
-            
-            # Extract parameters using cached function
-            extracted_params = self.cached_extract_params(query)
-            
-            # Calculate slot filling accuracy
-            sfa_score, slot_details = self._calculate_slot_accuracy(extracted_params, ground_truth)
-            
-            # Set up timeout handler
-            signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(self.timeout)
-            
-            try:
-                # Execute agent with the query - limit retries
-                start_time = time.time()
-                success, result, history = agent_execute_with_retry(query, retry_times=1)
-                processing_time = time.time() - start_time
-                
-                # Cancel timeout
-                signal.alarm(0)
-            except TimeoutException:
-                print(f"Warning: Evaluation for entry {entry.get('id', 0)} timed out after {self.timeout} seconds")
-                success = False
-                result = "TIMEOUT: Evaluation took too long"
-                history = [(query, result)]
-                processing_time = self.timeout
-            except Exception as e:
-                print(f"Error executing agent for entry {entry.get('id', 0)}: {e}")
-                success = False
-                result = f"ERROR: {str(e)}"
-                history = [(query, result)]
-                processing_time = time.time() - start_time
-            
-            # Check task completion
-            tcr_score = 1.0 if success and self._check_task_completion(result) else 0.0
-            
-            # Check first turn success
-            ftsr_score = 1.0 if success and self._check_first_turn_success(result, history) else 0.0
-            
-            # Store metrics
-            self.metrics["sfa"].append(sfa_score)
-            self.metrics["tcr"].append(tcr_score)
-            self.metrics["ftsr"].append(ftsr_score)
-            
-            # Store prediction (includes both input and response)
-            prediction = {
-                "id": entry.get("id", 0),
-                "query": query,
-                "ground_truth": ground_truth,
-                "extracted_params": extracted_params,
-                "metrics": {
-                    "sfa_score": sfa_score,
-                    "tcr_score": tcr_score,
-                    "ftsr_score": ftsr_score,
-                    "processing_time": processing_time
-                },
-                "response": result,
-                "success": success,
-                "timed_out": isinstance(result, str) and result.startswith("TIMEOUT"),
-                "error": isinstance(result, str) and result.startswith("ERROR")
-            }
-            
-            self.predictions.append(prediction)
-            
-            # Save checkpoint after each evaluation
-            self._save_checkpoint()
-            
-            # Update and save predictions file after each evaluation
-            with open(self.predictions_file, 'w', encoding='utf-8') as f:
-                json.dump(self.predictions, f, ensure_ascii=False, indent=2)
-            
-            return {
-                "sfa": sfa_score,
-                "tcr": tcr_score,
-                "ftsr": ftsr_score
-            }
-        
-        except Exception as e:
-            print(f"Error evaluating entry: {e}")
-            return {
-                "sfa": 0.0,
-                "tcr": 0.0,
-                "ftsr": 0.0
-            }
-        finally:
-            # Ensure timeout is cancelled
-            signal.alarm(0)
-    
-    def evaluate_dataset(self):
-        """Evaluate the dataset"""
-        # Filter out already evaluated entries
-        entries_to_evaluate = []
-        for entry in self.benchmark_data:
-            if not self._is_already_evaluated(entry.get("id", 0)):
-                entries_to_evaluate.append(entry)
-        
-        remaining = len(entries_to_evaluate)
-        print(f"Found {len(self.benchmark_data) - remaining} already evaluated entries")
-        print(f"Evaluating {remaining} remaining entries...")
-        
-        if remaining == 0:
-            print("All entries already evaluated!")
-            return self.get_results()
-            
-        try:
-            for entry in tqdm(entries_to_evaluate):
-                self.evaluate_entry(entry)
-        except KeyboardInterrupt:
-            print("\nEvaluation interrupted by user. Progress has been saved.")
+            # Save intermediate results every 5 samples
+            if (i + 1) % 5 == 0:
+                self._save_results(f"{self.output_file}.interim")
+                logger.info(f"Saved interim results after sample {start_index + i + 1}")
         
         # Calculate overall metrics
-        self.results = self.get_results()
+        total_samples = len(self.evaluation_results["detailed_results"])
+        if total_samples > 0:
+            self.evaluation_results["metrics"]["sfa"] = sum(1 for r in self.evaluation_results["detailed_results"] if r["sfa"]) / total_samples
+            self.evaluation_results["metrics"]["tcr"] = sum(1 for r in self.evaluation_results["detailed_results"] if r["tcr"]) / total_samples
+            self.evaluation_results["metrics"]["ftsr"] = sum(1 for r in self.evaluation_results["detailed_results"] if r["ftsr"]) / total_samples
         
-        # Save final results
-        with open(self.results_file, 'w', encoding='utf-8') as f:
-            json.dump(self.results, f, ensure_ascii=False, indent=2)
-        
-        print(f"Final evaluation results saved to {self.results_file}")
-        print(f"Predictions saved to {self.predictions_file}")
-        
-        return self.results
+        # Save results
+        self._save_results()
+        self._print_summary()
     
-    def get_results(self):
-        """Get overall evaluation results"""
-        results = {}
+    def _evaluate_sample(self, sample, api_delay=1, max_retries=3):
+        """Evaluate agent performance on a single benchmark sample
         
-        # Calculate averages for each metric
-        for metric, values in self.metrics.items():
-            if values:
-                results[metric] = {
-                    "mean": float(np.mean(values)),
-                    "median": float(np.median(values)),
-                    "min": float(np.min(values)),
-                    "max": float(np.max(values)),
-                    "std": float(np.std(values)),
-                    "count": len(values)
+        Args:
+            sample (dict): Benchmark sample with query and ground truth
+            api_delay (float): Delay in seconds between API calls
+            max_retries (int): Maximum number of retries for API calls
+            
+        Returns:
+            dict: Evaluation results for this sample
+        """
+        sample_id = sample.get("id", "unknown")
+        query = sample.get("query", "")
+        ground_truth = sample.get("ground_truth", {})
+        expected_results = sample.get("expected_results", {})
+        
+        logger.debug(f"Evaluating sample {sample_id}: {query}")
+        
+        # Create a unique thread ID for this evaluation
+        thread_id = f"eval-{sample_id}-{datetime.datetime.now().timestamp()}"
+        
+        # Prepare input for the agent
+        inputs = {"messages": [("user", query)]}
+        config = {"configurable": {"thread_id": thread_id}}
+        
+        # Call the agent with retry logic
+        retry_count = 0
+        while retry_count < max_retries:
+            try:
+                # Add delay before API call to reduce rate limit issues
+                time.sleep(api_delay)
+                
+                result = graph.invoke(inputs, config=config)
+                agent_response = result["messages"][-1].content
+                
+                # Extract intermediate steps to analyze tool usage
+                steps = []
+                if hasattr(result, "intermediate_steps"):
+                    steps = result.intermediate_steps
+                
+                # Evaluate results
+                evaluation = self._analyze_agent_response(agent_response, ground_truth, expected_results, steps)
+                
+                return {
+                    "sample_id": sample_id,
+                    "query": query,
+                    "ground_truth": ground_truth,
+                    "agent_response": agent_response,
+                    "sfa": evaluation["sfa"],
+                    "tcr": evaluation["tcr"],
+                    "ftsr": evaluation["ftsr"],
+                    "notes": evaluation["notes"]
                 }
-            else:
-                results[metric] = {
-                    "mean": 0.0,
-                    "median": 0.0,
-                    "min": 0.0,
-                    "max": 0.0,
-                    "std": 0.0,
-                    "count": 0
-                }
+                
+            except Exception as e:
+                retry_count += 1
+                error_msg = str(e)
+                
+                # If it's a rate limit error, wait longer
+                if "429" in error_msg or "rate_limit" in error_msg.lower():
+                    wait_time = 30 * (2 ** retry_count)  # Exponential backoff: 30s, 60s, 120s
+                    logger.warning(f"Rate limit exceeded, waiting {wait_time}s before retry {retry_count}/{max_retries}")
+                    time.sleep(wait_time)
+                else:
+                    logger.error(f"Error evaluating sample {sample_id}: {e}")
+                    time.sleep(api_delay * 2)  # Wait a bit longer on other errors
         
-        # Add overall success rate
-        timed_out_count = sum(1 for r in self.predictions if r.get("timed_out", False))
-        error_count = sum(1 for r in self.predictions if r.get("error", False))
-        success_count = sum(1 for r in self.predictions if r.get("success", False))
+        # After all retries failed
+        logger.error(f"Failed to evaluate sample {sample_id} after {max_retries} retries")
+        return {
+            "sample_id": sample_id,
+            "query": query,
+            "ground_truth": ground_truth,
+            "agent_response": f"ERROR: Evaluation failed after {max_retries} retries",
+            "sfa": False,
+            "tcr": False,
+            "ftsr": False,
+            "notes": f"Evaluation failed after {max_retries} retries: {error_msg}"
+        }
+    
+    def _analyze_agent_response(self, response, ground_truth, expected_results, steps):
+        """Analyze the agent's response against ground truth
         
-        total = len(self.predictions)
-        
-        results["overall"] = {
-            "total_entries": total,
-            "success_rate": float(success_count / total) if total > 0 else 0.0,
-            "timeout_rate": float(timed_out_count / total) if total > 0 else 0.0,
-            "error_rate": float(error_count / total) if total > 0 else 0.0
+        Args:
+            response (str): Agent's response text
+            ground_truth (dict): Ground truth parameters
+            expected_results (dict): Expected flight results
+            steps (list): Intermediate reasoning steps
+            
+        Returns:
+            dict: Analysis results with metrics
+        """
+        # Initialize results
+        analysis = {
+            "sfa": False,  # Successful Flight Acquisition
+            "tcr": False,  # Task Completion Rate
+            "ftsr": False, # Flight-Trip Success Rate
+            "notes": []
         }
         
-        return results
-    
-    def print_results(self):
-        """Print evaluation results in a formatted way"""
-        if not self.results:
-            self.results = self.get_results()
+        # Check if response contains flight information
+        has_flight_info = bool(re.search(r'(flight|airline|departure|arrival)', response, re.IGNORECASE))
         
-        print("\n===== EVALUATION RESULTS =====")
-        print(f"Total Entries Evaluated: {self.results['overall']['total_entries']}")
-        print(f"Success Rate: {self.results['overall']['success_rate']:.2%}")
-        print(f"Timeout Rate: {self.results['overall']['timeout_rate']:.2%}")
-        print(f"Error Rate: {self.results['overall']['error_rate']:.2%}")
+        # Check if flight search was successfully performed
+        analysis["sfa"] = has_flight_info
         
-        for metric, stats in self.results.items():
-            if metric == "overall":
+        # Check if response includes a markdown flight table (indicator of task completion)
+        has_markdown_table = "markdown" in response.lower() or "recommended flight" in response.lower()
+        analysis["tcr"] = has_flight_info and has_markdown_table
+        
+        # Extract and match flight parameters against ground truth
+        # This is a simplified check - we're looking for key parameters in the response
+        matched_params = 0
+        total_params = 0
+        
+        for param, value in ground_truth.items():
+            total_params += 1
+            
+            # Skip non-string values for simple matching
+            if not isinstance(value, str):
                 continue
                 
-            metric_name = {
-                "tcr": "Task Completion Rate",
-                "sfa": "Slot Filling Accuracy",
-                "ftsr": "First-Turn Success Rate"
-            }.get(metric, metric)
-            
-            print(f"\n{metric_name}:")
-            print(f"  Mean:   {stats['mean']:.4f}")
-            print(f"  Median: {stats['median']:.4f}")
-            print(f"  Min:    {stats['min']:.4f}")
-            print(f"  Max:    {stats['max']:.4f}")
-            print(f"  StdDev: {stats['std']:.4f}")
+            # Look for parameter values in the response
+            if str(value).lower() in response.lower():
+                matched_params += 1
+                
+        # Calculate parameter match ratio
+        match_ratio = matched_params / total_params if total_params > 0 else 0
         
-        print("\n=============================")
+        # FTSR is successful if at least 70% of parameters match
+        analysis["ftsr"] = match_ratio >= 0.7
+        
+        # Add notes about the evaluation
+        if not analysis["sfa"]:
+            analysis["notes"].append("Failed to acquire flight information")
+        if not analysis["tcr"]:
+            analysis["notes"].append("Failed to complete the full task (missing flight table or recommendations)")
+        if not analysis["ftsr"]:
+            analysis["notes"].append(f"Parameter match ratio: {match_ratio:.2f} - below threshold")
+        
+        return analysis
+    
+    def _save_results(self, output_file=None):
+        """Save evaluation results to file"""
+        try:
+            file_to_save = output_file or self.output_file
+            with open(file_to_save, 'w', encoding='utf-8') as f:
+                json.dump(self.evaluation_results, f, indent=2)
+            logger.info(f"Evaluation results saved to {file_to_save}")
+        except Exception as e:
+            logger.error(f"Error saving evaluation results: {e}")
+    
+    def _print_summary(self):
+        """Print evaluation summary to console"""
+        metrics = self.evaluation_results["metrics"]
+        
+        print("\n" + "="*50)
+        print("FLIGHT SEARCH AGENT EVALUATION SUMMARY")
+        print("="*50)
+        print(f"Total samples evaluated: {len(self.evaluation_results['detailed_results'])}")
+        print(f"Successful Flight Acquisition (SFA): {metrics['sfa']:.2%}")
+        print(f"Task Completion Rate (TCR): {metrics['tcr']:.2%}")
+        print(f"Flight-Trip Success Rate (FTSR): {metrics['ftsr']:.2%}")
+        print("="*50)
+        
+        # Count success/failure by metric
+        sfa_success = sum(1 for r in self.evaluation_results["detailed_results"] if r["sfa"])
+        tcr_success = sum(1 for r in self.evaluation_results["detailed_results"] if r["tcr"])
+        ftsr_success = sum(1 for r in self.evaluation_results["detailed_results"] if r["ftsr"])
+        
+        print(f"SFA: {sfa_success} succeeded, {len(self.evaluation_results['detailed_results']) - sfa_success} failed")
+        print(f"TCR: {tcr_success} succeeded, {len(self.evaluation_results['detailed_results']) - tcr_success} failed")
+        print(f"FTSR: {ftsr_success} succeeded, {len(self.evaluation_results['detailed_results']) - ftsr_success} failed")
+
 
 def main():
     """Main function to run evaluation"""
-    parser = argparse.ArgumentParser(description='Evaluate flight search agent performance')
-    parser.add_argument('--input', type=str, default="benchmark_dataset.json",
-                      help='Path to benchmark dataset (default: benchmark_dataset.json)')
-    parser.add_argument('--max-entries', type=int, default=None,
-                      help='Maximum number of entries to evaluate (default: all)')
-    parser.add_argument('--predictions', type=str, default="predictions.json",
-                      help='File to save individual predictions (default: predictions.json)')
-    parser.add_argument('--results', type=str, default="evaluation_results.json",
-                      help='File to save summary results (default: evaluation_results.json)')
-    parser.add_argument('--cache-dir', type=str, default="eval_cache",
-                      help='Directory for cache files (default: eval_cache)')
-    parser.add_argument('--timeout', type=int, default=10,
-                      help='Timeout in seconds for each evaluation (default: 45)')
+    parser = argparse.ArgumentParser(description='Evaluate flight search agent using benchmark dataset')
+    parser.add_argument('--benchmark', type=str, default="benchmark_dataset.json", 
+                        help='Path to benchmark dataset file (default: benchmark_dataset.json)')
+    parser.add_argument('--output', type=str, default="evaluation_results.json", 
+                        help='Path to save evaluation results (default: evaluation_results.json)')
+    parser.add_argument('--samples', type=int, default=None, 
+                        help='Maximum number of samples to evaluate (default: all)')
+    parser.add_argument('--start-index', type=int, default=0,
+                        help='Starting index for evaluation (default: 0)')
+    parser.add_argument('--api-delay', type=float, default=2.0,
+                        help='Delay in seconds between API calls (default: 2.0)')
     
     args = parser.parse_args()
     
     print(f"Configuration:")
-    print(f"- Input dataset: {args.input}")
-    print(f"- Max entries: {'all' if args.max_entries is None else args.max_entries}")
-    print(f"- Predictions file: {args.predictions}")
-    print(f"- Results file: {args.results}")
-    print(f"- Cache directory: {args.cache_dir}")
-    print(f"- Timeout: {args.timeout} seconds")
+    print(f"- Benchmark file: {args.benchmark}")
+    print(f"- Output file: {args.output}")
+    print(f"- Max samples: {args.samples if args.samples else 'All'}")
+    print(f"- Start index: {args.start_index}")
+    print(f"- API delay: {args.api_delay}s")
     
-    # Initialize evaluator
-    evaluator = FlightSearchEvaluator(
-        benchmark_file=args.input,
-        max_entries=args.max_entries,
-        predictions_file=args.predictions,
-        results_file=args.results,
-        cache_dir=args.cache_dir
-    )
+    # Run evaluation
+    evaluator = FlightAgentEvaluator(args.benchmark, args.output)
+    evaluator.evaluate_agent(max_samples=args.samples, start_index=args.start_index, api_delay=args.api_delay)
     
-    # Set timeout from args
-    evaluator.timeout = args.timeout
-    
-    # Evaluate dataset
-    evaluator.evaluate_dataset()
-    
-    # Print results
-    evaluator.print_results()
+    print(f"Evaluation complete. Results saved to: {args.output}")
+
 
 if __name__ == "__main__":
     main()

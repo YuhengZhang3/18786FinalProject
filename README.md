@@ -56,73 +56,106 @@ This project includes tools for generating benchmark datasets and evaluating the
 
 ### Benchmark Dataset Generation
 
-Generate test datasets with natural language queries and expected results:
+Generate test datasets with natural language flight queries and expected results:
 
 ```bash
-# Generate default dataset (100 mock samples)
-python benchmark_datasets.py
-
-# Generate 100 samples with custom output file
-python benchmark_datasets.py --size 100 --output synthetic_datasets.json
+# Generate 100 samples with mock data
+python benchmark_datasets.py --size 100 --output mock_benchmark_dataset.json
 
 # Generate dataset using real Skyscanner API
-python benchmark_datasets.py --size 100 --use-real-api --output real_datasets.json
+python benchmark_datasets.py --size 100 --use-real-api --output real_benchmark_dataset.json
 ```
-
-**📁 Example Benchmark Datasets:**  
-You can also download example benchmark datasets directly from Google Drive:  
-[Click here to access the dataset folder](https://drive.google.com/drive/folders/1ijn1nGVkoxTJL18JtVLxJ24DsCu-TCOF?usp=sharing)
-
-#### Command Line Options:
-- `--size`: Number of samples to generate (default: 100)
-- `--use-real-api`: Use real Skyscanner API instead of mock data
-- `--output`: Output file path (default: benchmark_dataset.json)
 
 ### Agent Evaluation
 
-Evaluate the agent's performance against benchmark datasets:
+There are two ways to evaluate the agent's performance:
+
+#### Standard Evaluation
+
+For smaller datasets or when API rate limits are not a concern:
 
 ```bash
-# Evaluate using default settings
-python evaluation.py
+# Run evaluation on all benchmark samples
+python evaluation.py --benchmark mock_benchmark_dataset.json --output mock_evaluation_results.json
 
-# Evaluate with a custom dataset file
-python evaluation.py --input synthetic_dataset.json
 
-# Evaluate only the first 20 entries
-python evaluation.py --max-entries 20
+# Evaluate only a subset of samples
+python evaluation.py --benchmark real_benchmark_dataset.json --output real_evaluation_results.json
 
-# Customize output files
-python evaluation.py --input synthetic_datasets.json --predictions synthetic_predictions.json --results eval_synthetic_summary.json
-
-# Set custom timeout and cache directory
-python evaluation.py --timeout 60 --cache-dir custom_cache
 ```
 
-#### Command Line Options:
-- `--input`: Path to benchmark dataset (default: benchmark_dataset.json)
-- `--max-entries`: Maximum number of entries to evaluate (default: all)
-- `--predictions`: File to save individual predictions (default: predictions.json)
-- `--results`: File to save summary results (default: evaluation_results.json)
-- `--cache-dir`: Directory for cache files (default: eval_cache)
-- `--timeout`: Timeout in seconds for each evaluation (default: 45)
+#### Batch Evaluation (Recommended for Large Datasets)
 
-#### Output Files:
-- **Predictions file**: Contains detailed predictions and metrics for each query
-- **Results file**: Contains summary statistics and overall performance metrics
+For evaluating large datasets while respecting API rate limits:
 
-The evaluation process automatically caches parameter extraction results to reduce LLM calls and saves progress after each entry, allowing for safe interruption and resumption.
+```bash
+# Evaluate mock data in batches
+python batch_evaluation.py --benchmark mock_benchmark_dataset.json --output mock_evaluation --batch-size 10 --api-delay 3 --batch-delay 180
 
-#### Evaluation Metrics:
+# Evaluate real data in batches
+python batch_evaluation.py --benchmark real_benchmark_dataset.json --output real_evaluation --batch-size 10 --api-delay 3 --batch-delay 180
+
+# Merge results from an incomplete evaluation
+python batch_evaluation.py --output mock_evaluation --merge-only
+
+```
+
+
+### Evaluation Metrics
 
 The evaluation measures three key metrics:
 
-1. **Slot Filling Accuracy (SFA)**: How accurately the agent extracts flight parameters  
-2. **Task Completion Rate (TCR)**: Whether the agent successfully completes the requested search  
-3. **First-Turn Success Rate (FTSR)**: Whether the agent completes the task in the first interaction  
+1. **Successful Flight Acquisition (SFA)**: Whether the agent successfully retrieves flight information
+2. **Task Completion Rate (TCR)**: Whether the agent completes the full task workflow (search, rate, recommend)
+3. **Flight-Trip Success Rate (FTSR)**: How accurately the agent's response matches the expected flight parameters
 
-Results are saved to `evaluation_results_final.json` for further analysis.
+# Evaluation Methodology
 
+## Parameter Matching Algorithm
+
+The evaluation framework employs a text-based parameter matching algorithm to assess the flight search agent's response accuracy. This section details the current approach and its operational characteristics.
+
+### Algorithm Description
+
+The parameter matching algorithm implements a string containment verification methodology to determine response accuracy. For each benchmark sample, the algorithm:
+
+1. Extracts ground truth parameters from the benchmark dataset
+2. Processes the agent's natural language response as unstructured text
+3. Performs case-insensitive string matching between each ground truth parameter and the response text
+4. Calculates a match ratio as the proportion of successfully matched parameters
+5. Applies a threshold-based classification to determine overall success
+
+### Evaluation Metrics
+
+The evaluation framework assesses agent performance using three complementary metrics:
+
+1. **Successful Flight Acquisition (SFA)**: Measures whether the agent successfully retrieves any flight information, determined by the presence of flight-related terminology in the response (e.g., "flight," "airline," "departure," "arrival").
+
+2. **Task Completion Rate (TCR)**: Evaluates whether the agent presents flight information in a structured format. Success requires both flight information retrieval and proper presentation (typically through a markdown table or explicit flight recommendations).
+
+3. **Flight-Trip Success Rate (FTSR)**: Quantifies the accuracy of retrieved flight information against ground truth parameters. Success is determined when the match ratio exceeds a predefined threshold of 70%.
+
+### Matching Procedure
+
+The current parameter matching procedure operates as follows:
+
+1. For each ground truth parameter:
+   - Skip non-string values for which string matching is not applicable
+   - Convert both the parameter value and the agent's response to lowercase
+   - Search for the parameter value as a substring within the response text
+   - Increment the match counter if the parameter value is found
+
+2. The match ratio is calculated as:
+   ```
+   match_ratio = matched_parameters / total_parameters
+   ```
+
+3. The FTSR metric is considered successful if:
+   ```
+   match_ratio ≥ 0.7
+   ```
+
+This approach implements a binary classification for each parameter (matched or unmatched) and applies a threshold-based determination of overall success, balancing precision requirements with allowance for acceptable variations in representation.
 
 
 ## Future Optimizations
