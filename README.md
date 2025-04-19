@@ -60,10 +60,12 @@ Generate test datasets with natural language flight queries and expected results
 
 ```bash
 # Generate dataset using real Skyscanner API snapshots
-python benchmark_datasets.py --size 50 --use-real-api --output real_benchmark_dataset.json --snapshot-date "2025-04-10"
+python benchmark_datasets.py --size 50 --use-real-api --output real_benchmark_dataset.json
 ```
 
-The snapshot approach uses flight data captured at a specific point in time (2025-04-10 in this example), ensuring consistent evaluation despite the constantly changing nature of flight availability and pricing. This creates a stable benchmark that allows for reliable comparison between different agent versions.
+The snapshot approach uses flight data captured at a specific point in time, ensuring consistent evaluation despite the constantly changing nature of flight availability and pricing. This creates a stable benchmark that allows for reliable comparison between different agent versions.
+
+For generated data, see: https://drive.google.com/file/d/1qEIKknaPlOERKRteXlKQcs4g4E5Uw9aE/view?usp=sharing
 
 ### Agent Evaluation
 
