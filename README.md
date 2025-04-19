@@ -50,11 +50,11 @@ Example queries:
 - "I need to find a business class flight from SFO to ORD next Friday for 2 adults"
 - "Find me a round-trip flight from New York to Los Angeles, leaving next Friday and returning next Sunday, economy class"
 
-# Flight Search Agent Evaluation & Benchmarking
+## Flight Search Agent Evaluation & Benchmarking
 
 This project includes tools for generating benchmark datasets and evaluating the flight search agent's performance.
 
-## Benchmark Dataset Generation
+### Benchmark Dataset Generation
 
 Generate test datasets with natural language flight queries and expected results:
 
@@ -65,9 +65,9 @@ python benchmark_datasets.py --size 50 --use-real-api --output real_benchmark_da
 
 The snapshot approach uses flight data captured at a specific point in time (2025-04-10 in this example), ensuring consistent evaluation despite the constantly changing nature of flight availability and pricing. This creates a stable benchmark that allows for reliable comparison between different agent versions.
 
-## Agent Evaluation
+### Agent Evaluation
 
-### Batch Evaluation (Recommended Method)
+#### Batch Evaluation (Recommended Method)
 
 For evaluating datasets while respecting API rate limits:
 
@@ -79,7 +79,7 @@ python batch_evaluation.py --benchmark real_benchmark_dataset.json --output real
 python batch_evaluation.py --output real_evaluation --merge-only
 ```
 
-## Evaluation Metrics
+### Evaluation Metrics
 
 The evaluation framework assesses agent performance using three complementary metrics:
 
@@ -89,7 +89,7 @@ The evaluation framework assesses agent performance using three complementary me
 
 3. **First-Turn Success Rate (FTSR)**: Measures how often the agent successfully completes the search without requiring additional clarification from the user.
 
-## Comparative Evaluation Results
+### Comparative Evaluation Results
 
 We've improved the evaluation methodology and metrics since the middle project report. The following results show performance improvements using the same evaluation algorithm and metrics on an identical real data benchmark dataset:
 
@@ -99,7 +99,7 @@ We've improved the evaluation methodology and metrics since the middle project r
 | Task Completion Rate (TCR)    | 100.00%           | 82.00%                  |
 | First-Turn Success Rate (FTSR)| 98.00%            | 68.00%                  |
 
-### Analysis
+#### Analysis
 
 - While our current method shows slightly lower Slot Filling Accuracy, it demonstrates significant improvements in both Task Completion Rate and First-Turn Success Rate.
 - The 18% improvement in Task Completion Rate indicates our agent is now much more reliable at completing searches successfully.
