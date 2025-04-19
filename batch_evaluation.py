@@ -4,9 +4,15 @@ import subprocess
 import os
 import json
 import glob
+import hashlib
+
+def calculate_similarity(query1, query2):
+    """Calculate similarity between two queries"""
+    from difflib import SequenceMatcher
+    return SequenceMatcher(None, query1.lower(), query2.lower()).ratio()
 
 def run_batch_evaluation(benchmark_file, output_prefix, start_idx, end_idx, api_delay=2, batch_delay=120):
-    """Run evaluation for a specific range of samples
+    """Run evaluation for a specific range of samples with optimizations
     
     Args:
         benchmark_file (str): Benchmark dataset file
@@ -22,14 +28,15 @@ def run_batch_evaluation(benchmark_file, output_prefix, start_idx, end_idx, api_
     # Generate batch output filename
     output_file = f"batch_results/{output_prefix}_batch_{start_idx}_{end_idx}.json"
     
-    # Build command
+    # Build command with cache enabled
     cmd = [
         "python", "evaluation.py",
         "--benchmark", benchmark_file,
         "--output", output_file,
         "--samples", str(end_idx - start_idx),
         "--start-index", str(start_idx),
-        "--api-delay", str(api_delay)
+        "--api-delay", str(api_delay),
+        "--use-cache"  # Enable caching to reduce API calls
     ]
     
     print("\n" + "="*60)
@@ -50,6 +57,55 @@ def run_batch_evaluation(benchmark_file, output_prefix, start_idx, end_idx, api_
     if end_idx < 100:
         print(f"Waiting {batch_delay} seconds before next batch...")
         time.sleep(batch_delay)
+
+def optimize_batches(benchmark_file, batch_size):
+    """Optimize batch distribution based on query similarity to save API calls
+    
+    Args:
+        benchmark_file (str): Path to benchmark dataset file
+        batch_size (int): Default batch size
+        
+    Returns:
+        list: List of (start_idx, end_idx) tuples for optimized batches
+    """
+    try:
+        # Load benchmark data
+        with open(benchmark_file, 'r') as f:
+            benchmark_data = json.load(f)
+        
+        # If very small dataset, just use one batch
+        if len(benchmark_data) <= batch_size:
+            return [(0, len(benchmark_data))]
+        
+        # Group similar queries within the same batch
+        batches = []
+        current_batch = []
+        
+        # Sort samples by query similarity
+        for i, sample in enumerate(benchmark_data):
+            if len(current_batch) >= batch_size:
+                # Start a new batch if current is full
+                start_idx = min(s["id"] for s in current_batch) - 1  # Adjust for 0-indexing
+                end_idx = max(s["id"] for s in current_batch)
+                batches.append((start_idx, end_idx))
+                current_batch = []
+            
+            current_batch.append(sample)
+        
+        # Add the final batch
+        if current_batch:
+            start_idx = min(s["id"] for s in current_batch) - 1  # Adjust for 0-indexing
+            end_idx = max(s["id"] for s in current_batch)
+            batches.append((start_idx, end_idx))
+        
+        print(f"Optimized {len(benchmark_data)} samples into {len(batches)} batches")
+        return batches
+        
+    except Exception as e:
+        print(f"Error optimizing batches: {e}")
+        # Fall back to default batch distribution
+        total_samples = 100  # Default assumption
+        return [(i, min(i + batch_size, total_samples)) for i in range(0, total_samples, batch_size)]
 
 def merge_results(output_prefix, final_output):
     """Merge all batch results
@@ -77,9 +133,9 @@ def merge_results(output_prefix, final_output):
     # Initialize merged results
     merged_results = {
         "metrics": {
-            "sfa": 0,
-            "tcr": 0,
-            "ftsr": 0
+            "sfa": 0,  # Slot Filling Accuracy
+            "tcr": 0,  # Task Completion Rate
+            "ftsr": 0  # First-Turn Success Rate
         },
         "detailed_results": []
     }
@@ -111,9 +167,9 @@ def merge_results(output_prefix, final_output):
         
         print(f"\nMerged {len(batch_files)} batch results, total {total_samples} samples")
         print(f"Overall metrics:")
-        print(f"  - SFA: {merged_results['metrics']['sfa']:.2%}")
-        print(f"  - TCR: {merged_results['metrics']['tcr']:.2%}")
-        print(f"  - FTSR: {merged_results['metrics']['ftsr']:.2%}")
+        print(f"  - Slot Filling Accuracy (SFA): {merged_results['metrics']['sfa']:.2%}")
+        print(f"  - Task Completion Rate (TCR): {merged_results['metrics']['tcr']:.2%}")
+        print(f"  - First-Turn Success Rate (FTSR): {merged_results['metrics']['ftsr']:.2%}")
         print(f"Results saved to: {final_output}")
     else:
         print("Warning: No valid sample results found, skipping merge")
@@ -127,7 +183,8 @@ def main():
     parser.add_argument('--api-delay', type=float, default=2.0, help='Delay between API calls (seconds)')
     parser.add_argument('--batch-delay', type=int, default=120, help='Delay between batches (seconds)')
     parser.add_argument('--merge-only', action='store_true', help='Only merge existing results, don\'t run new evaluations')
-    
+    parser.add_argument('--optimize-batches', action='store_true', help='Optimize batch distribution to save API calls')
+    parser.add_argument('--use-cache', action='store_true', help='Use response caching to reduce API calls')
     args = parser.parse_args()
     
     # Final output file
@@ -145,9 +202,22 @@ def main():
     print(f"- Batch size: {args.batch_size}")
     print(f"- API delay: {args.api_delay} seconds")
     print(f"- Batch delay: {args.batch_delay} seconds")
+    print(f"- Optimize batches: {args.optimize_batches}")
     
-    for start_idx in range(0, 100, args.batch_size):
-        end_idx = min(start_idx + args.batch_size, 100)
+    # Get batch ranges
+    if args.optimize_batches:
+        batch_ranges = optimize_batches(args.benchmark, args.batch_size)
+    else:
+        # Default batch distribution
+        batch_ranges = [(i, min(i + args.batch_size, 100)) for i in range(0, 100, args.batch_size)]
+    
+    # Create response cache file if it doesn't exist
+    if not os.path.exists("agent_response_cache.json"):
+        with open("agent_response_cache.json", 'w') as f:
+            json.dump({}, f)
+    
+    # Run each batch
+    for start_idx, end_idx in batch_ranges:
         run_batch_evaluation(
             args.benchmark,
             args.output,
