@@ -50,73 +50,62 @@ Example queries:
 - "I need to find a business class flight from SFO to ORD next Friday for 2 adults"
 - "Find me a round-trip flight from New York to Los Angeles, leaving next Friday and returning next Sunday, economy class"
 
-## Evaluation & Benchmarking
+# Flight Search Agent Evaluation & Benchmarking
 
 This project includes tools for generating benchmark datasets and evaluating the flight search agent's performance.
 
-### Benchmark Dataset Generation
+## Benchmark Dataset Generation
 
 Generate test datasets with natural language flight queries and expected results:
 
 ```bash
-# Generate 50 samples with mock data
-python benchmark_datasets.py --size 50 --output mock_benchmark_dataset.json
-
-# Generate dataset using real Skyscanner API
-python benchmark_datasets.py --size 50 --use-real-api --output real_benchmark_dataset.json
+# Generate dataset using real Skyscanner API snapshots
+python benchmark_datasets.py --size 50 --use-real-api --output real_benchmark_dataset.json --snapshot-date "2025-04-10"
 ```
 
-### Agent Evaluation
+The snapshot approach uses flight data captured at a specific point in time (2025-04-10 in this example), ensuring consistent evaluation despite the constantly changing nature of flight availability and pricing. This creates a stable benchmark that allows for reliable comparison between different agent versions.
 
-There are two ways to evaluate the agent's performance:
+## Agent Evaluation
 
-#### Standard Evaluation
+### Batch Evaluation (Recommended Method)
 
-For smaller datasets or when API rate limits are not a concern:
-
-```bash
-
-python evaluation.py --benchmark mock_benchmark_dataset.json --output mock_evaluation_results.json
-```
-
-#### Batch Evaluation (Recommended for Large Datasets)
-
-For evaluating large datasets while respecting API rate limits:
+For evaluating datasets while respecting API rate limits:
 
 ```bash
-# Evaluate mock data in batches
-python batch_evaluation.py --benchmark mock_benchmark_dataset.json --output mock_evaluation --batch-size 10 --api-delay 3 --batch-delay 120 --use-cache --optimize-batches
-
 # Evaluate real data in batches
 python batch_evaluation.py --benchmark real_benchmark_dataset.json --output real_evaluation --batch-size 10 --api-delay 3 --batch-delay 120 --use-cache --optimize-batches
 
-
 # Merge results from an incomplete evaluation
-python batch_evaluation.py --output mock_evaluation --merge-only
 python batch_evaluation.py --output real_evaluation --merge-only
 ```
 
-### Evaluation Metrics on Real Data
+## Evaluation Metrics
 
 The evaluation framework assesses agent performance using three complementary metrics:
 
-1. **Slot Filling Accuracy (SFA)**
+1. **Slot Filling Accuracy (SFA)**: Measures how accurately the agent extracts key information from natural language queries (departure/arrival locations, dates, preferences).
 
-2. **Task Completion Rate (TCR)**
+2. **Task Completion Rate (TCR)**: Measures whether the agent successfully completes the entire search process and returns valid flight results.
 
-3. **First-Turn Success Rate (FTSR)**
+3. **First-Turn Success Rate (FTSR)**: Measures how often the agent successfully completes the search without requiring additional clarification from the user.
 
-### Evaluation Results
+## Comparative Evaluation Results
 
-| **Metric**                     | **Value**  |
-|-------------------------------|------------|
-| Slot Filling Accuracy (SFA)   | 56.00%     |
-| Task Completion Rate (TCR)    | 100.00%    |
-| First-Turn Success Rate (FTSR)| 98.00%     |
+We've improved the evaluation methodology and metrics since the middle project report. The following results show performance improvements using the same evaluation algorithm and metrics on an identical real data benchmark dataset:
+
+| **Metric**                     | **Current Method** | **Middle Report Method** |
+|-------------------------------|-------------------|--------------------------|
+| Slot Filling Accuracy (SFA)   | 56.00%            | 64.00%                  |
+| Task Completion Rate (TCR)    | 100.00%           | 82.00%                  |
+| First-Turn Success Rate (FTSR)| 98.00%            | 68.00%                  |
+
+### Analysis
+
+- While our current method shows slightly lower Slot Filling Accuracy, it demonstrates significant improvements in both Task Completion Rate and First-Turn Success Rate.
+- The 18% improvement in Task Completion Rate indicates our agent is now much more reliable at completing searches successfully.
+- The 30% improvement in First-Turn Success Rate demonstrates our agent's enhanced ability to understand and process queries correctly on the first attempt, greatly improving the user experience.
 
 ## Future Optimizations
-
-This section is continuously updated as new issues or improvement ideas are discovered.
 
 ### API Future Work
 
