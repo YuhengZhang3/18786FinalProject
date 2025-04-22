@@ -7,4 +7,4 @@ numpy==1.26.0
 langchain
 langchain-openai
 langgraph
-stremlit
+streamlit
